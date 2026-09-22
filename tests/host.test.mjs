@@ -29,6 +29,7 @@ import {
   readShutdownRequest,
   relaunchPlan,
   restartHelperEnv,
+  schemasteryReferrers,
   shouldOpenStartupWindow,
   resolveConfig,
 } from '../src/host.js'
@@ -997,5 +998,29 @@ describe('restartHelperEnv', () => {
     assert.equal(env.DSH_POWER_SWITCH_HANDSHAKE, base.handshake)
     assert.equal(env.DSH_POWER_SWITCH_HOST_LOG, base.hostLog)
     assert.equal(env.DSH_POWER_SWITCH_DELAY, '1')
+  })
+})
+
+/**
+ * Where the host-provided schema library is looked for.
+ *
+ * The ORDER is the whole point, and it was measured: a plugin installed into
+ * `node_modules` cannot resolve `@deepseek-ai/schemastery` from its own location
+ * (npm does not carry it — the runtime injects it), while the running host's entry
+ * point resolves it in every layout. Asking the plugin's own location first is what
+ * made a GitHub install lose its settings section and its persisted mode.
+ */
+describe('schemasteryReferrers', () => {
+  it('asks the host before the plugin itself', () => {
+    assert.deepEqual(
+      schemasteryReferrers({ hostEntry: 'file:///host/bin.js', self: 'file:///plugin/lib/index.js' }),
+      ['file:///host/bin.js', 'file:///plugin/lib/index.js'],
+    )
+  })
+
+  it('drops an absent host entry and de-duplicates the two', () => {
+    assert.deepEqual(schemasteryReferrers({ hostEntry: '', self: 'file:///plugin/lib/index.js' }), ['file:///plugin/lib/index.js'])
+    assert.deepEqual(schemasteryReferrers({ hostEntry: 'file:///x.js', self: 'file:///x.js' }), ['file:///x.js'])
+    assert.deepEqual(schemasteryReferrers({}), [])
   })
 })
