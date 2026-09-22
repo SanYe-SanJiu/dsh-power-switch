@@ -31,6 +31,10 @@ browser paths and a `.desktop` equivalent.
 # from GitHub (recommended)
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
+# pinned to a commit: git installs are cached by pnpm, so a plain re-add does not
+# always refresh, and a pinned ref is reproducible
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
+
 # from a local checkout, when you are editing the code
 # (`link:` keeps pointing at the checkout instead of copying it)
 dsh plugin --profile web add link:../dsh-power-switch
@@ -38,7 +42,7 @@ dsh plugin --profile web add link:../dsh-power-switch
 
 - `--profile` is **required**; the Web UI profile is `web` (`dsh web` means `dsh --profile web`).
 - The arguments after `add` are **forwarded to pnpm verbatim**, so an npm name, a
-  `github:owner/repo` spec, a `link:path` and a tarball URL all work. A relative path
+  `github:owner/repo[#ref]` spec, a `link:path` and a tarball URL all work. A relative path
   (`./x`, `../x`, `link:../x`) is resolved against the directory you RUN the command in,
   not against the profile directory.
 - Installation registers the bundle for you: DSH appends the package to the profile's
@@ -47,14 +51,42 @@ dsh plugin --profile web add link:../dsh-power-switch
 - `lib/` is committed with this repository, so a GitHub install needs **no build step** —
   and therefore never trips pnpm's allowBuilds prompt.
 
+### If the install fails: two cases, one one-shot flag each
+
+**① `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`** — when the profile has a plugin version
+younger than pnpm's release-age policy, pnpm verifies the whole lockfile before any
+change, so **every plugin operation is refused** (uninstalling an unrelated plugin too).
+Let this one command through:
+
+```powershell
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minimum-release-age=0
+```
+
+> ⚠️ The spelling must be kebab-case. `--config.minimumReleaseAge=0` is **silently
+> ignored** by pnpm ≥12.3, so the flag looks accepted and the same error comes back.
+> And do not follow the printed advice to run `pnpm clean --lockfile`: that re-resolves
+> the whole profile and changes your other plugins with it.
+
+**② A slow network** — a `github:` install fetches the **whole repository**, which can pass
+pnpm's default 60-second fetch timeout. Add a second one-shot flag:
+
+```powershell
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minimum-release-age=0 --config.fetchTimeout=600000
+```
+
 Restart DSH once, then open **Settings -> Plugins**: the card is in the list (labelled
 "DSH power button"), and the `⏻` button appears in the sidebar foot.
 
-> Uninstall with `dsh plugin --profile web remove dsh-power-switch`.
-> `dsh plugin` writes into `$DSH_HOME/profiles/web/`; if dsh runs under a sandbox, run it
-> from an ordinary terminal. And do **not** install the GitHub copy into a profile that
-> already links your development checkout — the package name is the same, so the second
-> install replaces the first.
+> **How to tell the GitHub copy is the one installed**: the profile's `dsh.profile.bundles`
+> contains it, and `node_modules\dsh-power-switch` is a **real directory** (a local
+> `link:` install is a junction).
+> **Uninstall, or go back to a local checkout**:
+> `dsh plugin --profile web remove dsh-power-switch`, then
+> `dsh plugin --profile web add link:G:/test/c/dsh-power-switch` — both with the one-shot
+> flag above. And do **not** install the GitHub copy into a profile that already links your
+> development checkout: the package name is the same, so the second install replaces the
+> first. `dsh plugin` writes into `$DSH_HOME/profiles/web/`; if dsh runs under a sandbox,
+> run it from an ordinary terminal.
 
 ## Shutting down
 

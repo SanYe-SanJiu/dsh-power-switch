@@ -26,24 +26,50 @@
 # 从 GitHub 安装（推荐）
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
+# 钉到某个提交：git 安装会被 pnpm 缓存，重复 add 不一定刷新，钉住也更好复现
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
+
 # 从本地检出安装（自己改代码时；link: 保持指向检出目录，不做拷贝）
 dsh plugin --profile web add link:../dsh-power-switch
 ```
 
 - `--profile` 是**必填的**；Web UI 就是 `web`（`dsh web` 等于 `dsh --profile web`）。
-- `add` 后面的参数**原样转发给 pnpm**，所以 npm 名、`github:owner/repo`、`link:路径`、tarball URL 都能用；
+- `add` 后面的参数**原样转发给 pnpm**，所以 npm 名、`github:owner/repo[#ref]`、`link:路径`、tarball URL 都能用；
   相对路径（`./x`、`../x`、`link:../x`）按**你运行命令时所在的目录**解析，不是在 profile 目录里解析。
 - 装完 DSH 会自动把这个包加进 profile 的 `dsh.profile.bundles`（因为它声明了 `dsh.bundle.patch`），
-  **不用手改任何 JSON**；如果某个包没声明 bundle patch，DSH 会打印一行警告说它只会作为普通依赖存在。
+  **不用手改任何 JSON**；没声明 bundle patch 的包会收到一行"只会作为普通依赖存在"的警告。
 - 本仓库的 `lib/` 是随代码一起提交的，所以从 GitHub 安装**不需要构建步骤**，也不会遇到 pnpm 的
   allowBuilds 拦截。
 
-装完重启一次 DSH，然后打开 **设置 → 插件**：卡片在列表里（标签「DSH 电源按钮」），
+### 装不上时的两种情况和对应的一次性开关
+
+**① `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`** —— profile 里有一个"刚发布不久"的插件版本时，
+pnpm 的安全等待期会在改动前校验整个锁文件，于是**任何插件改动都会被拒**（连卸载别的插件也一样）。
+加一个一次性放行即可：
+
+```powershell
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minimum-release-age=0
+```
+
+> ⚠️ 必须用**中划线**拼写。`--config.minimumReleaseAge=0`（驼峰）在 pnpm ≥12.3 上会被**静默忽略**，
+> 你会以为开关生效了却报一模一样的错。
+> 也别照提示跑 `pnpm clean --lockfile` —— 那会重新解析整个 profile，把其它插件一起换版。
+
+**② 网络慢**（`github:` 安装会拉**整个仓库**）——撞上 pnpm 默认 60 秒的抓取超时，再加一个：
+
+```powershell
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minimum-release-age=0 --config.fetchTimeout=600000
+```
+
+装完**重启一次 DSH**，然后打开 **设置 → 插件**：卡片在列表里（标签「DSH 电源按钮」），
 侧边栏页脚也会出现 `⏻`。
 
-> 卸载：`dsh plugin --profile web remove dsh-power-switch`。
+> **怎么确认装的是 GitHub 版**：profile 的 `dsh.profile.bundles` 里有它，且
+> `node_modules\dsh-power-switch` 是**真实目录**（本地 `link:` 版是 junction）。
+> **卸载 / 换回本地开发版**：`dsh plugin --profile web remove dsh-power-switch`，再
+> `dsh plugin --profile web add link:G:/test/c/dsh-power-switch`（两步都带上上面的一次性开关）。
+> **别在同一个 profile 上同时装 GitHub 版和本地 `link:` 版**——包名相同，后装的会替换先装的。
 > `dsh plugin` 会写 `$DSH_HOME/profiles/web/`；如果 dsh 带着沙箱运行，请在普通终端里执行。
-> 注意：**别在同一个 profile 上同时装 GitHub 版和本地 `link:` 版**——包名相同，后装的会替换先装的。
 
 ## 关闭进程
 
