@@ -1,0 +1,89 @@
+{
+  "name": "dsh-power-switch",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin (Windows only): a one-click shutdown button in the sidebar that leaves through DSH's own graceful exit, plus an app-window / normal-tab switch on the Settings -> Plugins card that saves the mode, fixes the desktop shortcut and restarts DSH — replaying the command the running host recorded for itself, and refusing the restart rather than risking an outage. 在侧边栏一键关闭 DSH 进程（走官方优雅退出通道），并在设置 → 插件页切换「应用窗口 / 普通标签页」：保存设置 → 改好桌面快捷方式 → 重启 DSH（重放宿主自己记录的真实启动命令；无法安全重启时明确拒绝，不会把服务丢下）。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "shutdown",
+    "power",
+    "process",
+    "settings",
+    "windows"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
+    }
+  },
+  "dshhub": {
+    "schemaVersion": 1,
+    "displayName": "dsh-power-switch",
+    "summary": "Windows 版：侧边栏一键关闭 DSH 进程（经官方优雅退出通道），并在设置 → 插件页切换「应用窗口 / 普通标签页」——自动改好桌面快捷方式、重放宿主记录的启动命令并重启；无法安全重启时明确拒绝并保持服务可用。One-click DSH shutdown from the sidebar, plus an app-window / tab launch switch on the Plugins page that also fixes the desktop shortcut (Windows only).",
+    "categories": [
+      "Web UI",
+      "进程"
+    ],
+    "surfaces": [
+      "host",
+      "web"
+    ],
+    "capabilities": {
+      "provides": []
+    },
+    "compatibility": {
+      "dsh": ">=0.1.0-rc.6",
+      "node": ">=20"
+    },
+    "permissions": {
+      "network": []
+    }
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "scripts",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.1.0-rc.6"
+  },
+  "os": [
+    "win32"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-host-webserver": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/run-tests.mjs"
+  }
+}

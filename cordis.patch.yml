@@ -1,0 +1,16 @@
+# dsh-power-switch bundle patch: one host row over any profile.
+#
+# The row name resolves from the profile's own node_modules, where
+# `dsh plugin --profile <name> add <path-or-package>` installed this package.
+#
+# Optional configuration -- the same values the plugin's own settings page
+# edits. A stored settings value wins over the row.
+#   config:
+#     launchMode: tab  # next window: 'tab' or 'app' (the card writes this one,
+#                      # and it lands in $DSH_HOME/settings.yaml -- that copy wins)
+#     delayMs: 1000    # ms between answering the click and leaving (0..30000)
+#     exitCode: 0      # process exit code
+#     hard: false      # true skips graceful disposal and forces the exit
+- insert:
+    - id: power-switch
+      name: dsh-power-switch

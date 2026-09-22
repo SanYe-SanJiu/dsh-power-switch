@@ -1,0 +1,5 @@
+# A settings document that says nothing about this plugin, while another
+# namespace does declare a launchMode. The answer must be null -- "no opinion" --
+# and never the other namespace's value.
+other-plugin:
+  launchMode: app

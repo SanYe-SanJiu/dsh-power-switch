@@ -1,0 +1,408 @@
+/**
+ * Artifact and layout tests for the power-switch host half.
+ *
+ * Loads the built artifact the way a profile loader does -- by path -- so a
+ * broken `lib/` layout or a stray source-only import fails here rather than in
+ * someone's running harness.
+ */
+
+import { strict as assert } from 'node:assert'
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = new URL('../', import.meta.url)
+
+/** Resolve a package-relative path for filesystem reads. */
+const at = (relative) => fileURLToPath(new URL(relative, ROOT))
+
+/** Resolve a package-relative URL for dynamic import. */
+const url = (relative) => new URL(relative, ROOT)
+
+describe('built package layout', () => {
+  it('declares the main and client entry points it ships', async () => {
+    const manifest = JSON.parse(await readFile(at('package.json'), 'utf8'))
+    assert.equal(manifest.name, 'dsh-power-switch')
+    assert.equal(manifest.main, './lib/index.js')
+    assert.equal(manifest.exports['./client'], './client.js')
+    assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
+    assert.equal(manifest.dsh.client.platform, 'web')
+    for (const file of manifest.files) {
+      await access(at(file))
+    }
+  })
+
+  it('imports the built host half by the path the loader will use', async () => {
+    const built = await import(url('lib/index.js'))
+    assert.equal(built.name, 'dsh-power-switch')
+    assert.deepEqual(built.inject, ['webServer'])
+    assert.equal(typeof built.apply, 'function')
+  })
+
+  it('keeps the built half identical to the source it was built from', async () => {
+    for (const file of ['index.js', 'host.js']) {
+      const source = await readFile(at(`src/${file}`), 'utf8')
+      const built = await readFile(at(`lib/${file}`), 'utf8')
+      assert.equal(built, source, `${file} is stale; run the build`)
+    }
+  })
+
+  it('routes the host half to a module that exists beside it', async () => {
+    const built = await readFile(at('lib/index.js'), 'utf8')
+    assert.match(built, /from '\.\/host\.js'/)
+    await access(at('lib/host.js'))
+  })
+
+  it('ships a bundle patch that inserts exactly this package once', async () => {
+    const patch = await readFile(at('cordis.patch.yml'), 'utf8')
+    const names = [...patch.matchAll(/name:\s*(\S+)/gu)].map((match) => match[1])
+    assert.deepEqual(names, ['dsh-power-switch'])
+  })
+
+  it('ships a client artifact in the loader registration shape', async () => {
+    const client = await readFile(at('client.js'), 'utf8')
+    assert.match(client, /window\.__ModuleLoader__\.load\(/)
+    assert.match(client, /id: 'dsh-power-switch'/)
+    assert.match(client, /factory: \(require\) =>/)
+    assert.match(client, /require\('react'\)/)
+    assert.match(client, /require\('@deepseek-ai\/dsh-client-ui-primitives'\)/)
+  })
+})
+
+/**
+ * The relaunch supervisor is BUILT AS A STRING and run with `node -e`, so a
+ * mistake inside `supervisorSource()` is invisible to every other check here:
+ * `node --check` on the helper only ever sees a valid file, because the broken
+ * code sits inside a template literal. That is not hypothetical. Two functions
+ * called from a scope that never defined them, and a stray backtick in a comment,
+ * each reached a running machine from exactly this blind spot.
+ *
+ * So these assertions do what the shell cannot: they compile and call the
+ * generator, then inspect the text it produces.
+ */
+describe('generated relaunch supervisor', () => {
+  /**
+   * The free variables the template interpolates, in the order it uses them.
+   *
+   * Adding an interpolation to `supervisorSource()` means adding it here; the
+   * failure if you forget names the missing identifier.
+   */
+  const PARAMS = ['boot', 'port', 'logFile', 'hostLogCandidates', 'handshakePath', 'sharedUrl', 'settingsFile']
+
+  /** Pull `function supervisorSource() { ... }` out by counting braces. */
+  const extract = (text) => {
+    const start = text.indexOf('function supervisorSource() {')
+    assert.notEqual(start, -1, 'restart-from-inside.mjs no longer defines supervisorSource()')
+    let depth = 0
+    for (let at = text.indexOf('{', start); at < text.length; at += 1) {
+      if (text[at] === '{') depth += 1
+      else if (text[at] === '}') {
+        depth -= 1
+        if (depth === 0) return text.slice(start, at + 1)
+      }
+    }
+    throw new Error('unbalanced braces in supervisorSource()')
+  }
+
+  /** Build the supervisor source the helper would hand to `node -e`. */
+  const build = async () => {
+    const helper = await readFile(at('scripts/restart-from-inside.mjs'), 'utf8')
+    const body = extract(helper)
+    let make
+    try {
+      make = new Function(...PARAMS, `${body}\nreturn supervisorSource()`)
+    } catch (error) {
+      // A stray backtick inside the template lands here: it truncates the string
+      // and leaves the rest of the module as bare syntax.
+      throw new Error(`the generated supervisor does not compile: ${error.message}`)
+    }
+    try {
+      return make(
+        { execPath: 'C:\\nodejs\\node.exe', args: ['C:\\pkg\\bin.js', 'web', '--no-open'], cwd: 'D:\\checkout' },
+        3080, 'G:\\pkg\\restart-dsh.log', ['G:\\repo\\dsh-web.log'],
+        'G:\\pkg\\restart-handshake.txt', new URL('scripts/restart-shared.mjs', ROOT).href, 'C:\\settings.yaml',
+      )
+    } catch (error) {
+      throw new Error(`supervisorSource() needs a parameter PARAMS does not list: ${error.message}`)
+    }
+  }
+
+  it('generates a complete script, not a truncated one', async () => {
+    const generated = await build()
+    assert.match(generated, /checked in; my job is to bring the service back/)
+    assert.match(generated, /restart complete/)
+    assert.match(generated, /process\.exit\(0\)/)
+  })
+
+  it('reports its own crashes, since its stdio is ignored', async () => {
+    const generated = await build()
+    assert.match(generated, /process\.on\('uncaughtException'/)
+    assert.match(generated, /process\.on\('unhandledRejection'/)
+  })
+
+  it('imports the window-mode helpers instead of assuming they are in scope', async () => {
+    const generated = await build()
+    assert.match(generated, /const \{ storedLaunchMode, openWindow \} = await import\(/)
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    assert.equal(typeof shared.storedLaunchMode, 'function')
+    assert.equal(typeof shared.findBrowser, 'function')
+    assert.equal(typeof shared.openWindow, 'function')
+  })
+
+  it('does not re-implement the window decision it shares with the other entry points', async () => {
+    const generated = await build()
+    // The app-window spawn form belongs to restart-shared.mjs alone. If it
+    // reappears anywhere else then the switch path, the manual restart and the
+    // desktop launch can drift apart -- and "app mode works there but not here"
+    // is exactly the complaint that prompted sharing this decision.
+    assert.doesNotMatch(generated, /--app=/)
+    for (const file of ['scripts/launch-dsh.mjs', 'scripts/restart-dsh-web.mjs', 'scripts/restart-from-inside.mjs']) {
+      assert.doesNotMatch(await readFile(at(file), 'utf8'), /--app=/, `${file} must defer to restart-shared.mjs`)
+    }
+    const shared = await readFile(at('scripts/restart-shared.mjs'), 'utf8')
+    // Written as a template literal, so the assertion matches it as written.
+    assert.match(shared, /\[`--app=\$\{url\}`/)
+  })
+
+  it('gives the desktop launcher the same shared decision', async () => {
+    const launcher = await readFile(at('scripts/launch-dsh.mjs'), 'utf8')
+    // The launcher imports several helpers now; what matters is that it TAKES the
+    // shared window decision instead of re-implementing it.
+    assert.match(launcher, /import \{[\s\S]*?\bopenWindow\b[\s\S]*?\} from '\.\/restart-shared\.mjs'/)
+    // A launcher that starts a second host on an occupied port is worse than one
+    // that refuses, so the refusal has to be there.
+    assert.match(launcher, /answers but no live token URL was found/)
+  })
+
+  it('marks the host that a deliberate opener started, so no second window appears', async () => {
+    // Three processes open this boot's window on purpose. Each must tell the host
+    // half that the job is taken: without the marker the plugin opens ANOTHER
+    // window on that path, which is how "one switch" becomes two windows.
+    for (const file of ['scripts/launch-dsh.mjs', 'scripts/restart-dsh-web.mjs', 'scripts/restart-from-inside.mjs']) {
+      assert.match(await readFile(at(file), 'utf8'), /DSH_POWER_SWITCH_WINDOW_HANDLED/, `${file} must mark the host it starts`)
+    }
+    const host = await readFile(at('src/host.js'), 'utf8')
+    assert.match(host, /WINDOW_HANDLED_ENV = 'DSH_POWER_SWITCH_WINDOW_HANDLED'/)
+  })
+
+  it('resolves the helpers before it checks in, so a broken module cannot take the host down', async () => {
+    const generated = await build()
+    const imported = generated.indexOf('await import(')
+    const checkedIn = generated.indexOf("appendFileSync(handshake")
+    assert.notEqual(imported, -1)
+    assert.notEqual(checkedIn, -1)
+    assert.ok(imported < checkedIn, 'the handshake must not be written before the helper module resolves')
+  })
+
+  it('reads the launch mode from the settings document it was pointed at', async () => {
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    // Another namespace declares its own launchMode FIRST in this fixture, so a
+    // key-name match would answer 'tab' here and silently switch the wrong way.
+    assert.equal(shared.storedLaunchMode(at('tests/fixtures/settings-app.yaml')), 'app')
+    // Same shape, but this plugin has no block: the answer is "no opinion".
+    assert.equal(shared.storedLaunchMode(at('tests/fixtures/settings-other.yaml')), null)
+    // A missing document is also "no opinion", not a crash. The name below is
+    // deliberately one that does not exist — do NOT "fix" this by creating it.
+    assert.equal(shared.storedLaunchMode(at('tests/fixtures/settings-absent-on-purpose.yaml')), null)
+  })
+
+  /**
+   * The host's own URL record, which is what the switch broke on.
+   *
+   * Measured failure: the helper looked for the live host's token URL in the
+   * logs only, and a machine whose launcher writes that log elsewhere produced
+   * `no host token URL in any log` — the mode was saved and the shortcut
+   * adopted, then the restart was refused. The host now writes the URL it minted
+   * for its own run, into the state directory rather than the package.
+   */
+  it('records the live URL under the harness home, and refuses anything else', async () => {
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    const home = await mkdtemp(join(tmpdir(), 'dpb-home-'))
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      assert.equal(shared.readRecordedTokenUrl(), null, 'nothing recorded yet')
+      const file = shared.writeRecordedTokenUrl('http://127.0.0.1:3080/?token=abc_DEF-123')
+      assert.equal(shared.readRecordedTokenUrl(), 'http://127.0.0.1:3080/?token=abc_DEF-123')
+      assert.match(file, /storages[/\\]dsh-power-switch[/\\]token-url\.txt$/u)
+      assert.ok(!file.startsWith(at('.')), 'the record must not live inside the package')
+      // A recorded file that is not a token URL must not be handed to a probe.
+      await writeFile(file, 'http://127.0.0.1:3080/\n', 'utf8')
+      assert.equal(shared.readRecordedTokenUrl(), null)
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * The interpreter record the two `.vbs` wrappers read.
+   *
+   * They cannot parse JSON and must not assume `%ProgramFiles%\nodejs\node.exe`:
+   * nvm-windows, fnm, volta and Store installs have no such file, and a bare
+   * `node.exe` needs a PATH a shortcut's environment may not carry. One line of
+   * text is what VBScript can read.
+   */
+  it('records the node interpreter as a single readable line', async () => {
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    const home = await mkdtemp(join(tmpdir(), 'dpb-home-'))
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      const file = shared.writeNodePath('C:\\Tools\\nvm\\v22.3.0\\node.exe')
+      assert.match(file, /storages[/\\]dsh-power-switch[/\\]node-path\.txt$/u)
+      const text = await readFile(file, 'utf8')
+      assert.equal(text, 'C:\\Tools\\nvm\\v22.3.0\\node.exe\n')
+      // The wrappers build the same path from the environment.
+      assert.equal(file, join(home, 'storages', 'dsh-power-switch', 'node-path.txt'))
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * Browser discovery decides whether app mode is possible at all.
+ *
+ * The measured trap: Chrome or Edge installed WITHOUT admin lives under
+ * `%LOCALAPPDATA%`, so a search that only knew `%ProgramFiles%` found nothing on
+ * exactly those machines and silently fell back to a tab.
+ */
+describe('browser discovery', () => {
+  it('looks in the per-user install root before the machine-wide ones', async () => {
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    const env = {
+      LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local',
+      PROGRAMFILES: 'C:\\Program Files',
+      'PROGRAMFILES(X86)': 'C:\\Program Files (x86)',
+    }
+    const candidates = shared.browserCandidates(env)
+    assert.ok(candidates.length >= 4)
+    assert.equal(candidates[0], 'C:\\Users\\a\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe')
+    assert.ok(candidates.includes('C:\\Users\\a\\AppData\\Local\\Microsoft\\Edge\\Application\\msedge.exe'))
+    assert.ok(candidates.includes('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'))
+    // A candidate that does not exist must not be picked.
+    const found = shared.findBrowser((path) => path.includes('AppData'), env)
+    assert.match(found, /AppData/u)
+    assert.equal(shared.findBrowser(() => false, env), undefined)
+  })
+})
+
+/**
+ * The shortcut the card offers to place is the piece that makes the stored mode
+ * govern a cold start, and it must be REVERSIBLE, so the two halves have to agree
+ * exactly: what the host passes as arguments, and what the helper reads.
+ */
+describe('desktop shortcut placement', () => {
+  it('ships a helper that stays ASCII-only, because wscript reads it as ANSI', async () => {
+    const helper = await readFile(at('scripts/make-shortcut.vbs'), 'utf8')
+    // Every piece of text the shortcut shows arrives as an ARGUMENT (wscript reads
+    // those as UTF-16). Text written into this file instead would be decoded as
+    // ANSI and land on the desktop as mojibake.
+    // eslint-disable-next-line no-control-regex -- ASCII-ness is exactly the claim
+    assert.doesNotMatch(helper, /[^\u0000-\u007F]/u, 'make-shortcut.vbs must stay ASCII-only')
+    assert.match(helper, /WScript\.Arguments\.Count < 6/)
+    // A redirected Desktop is common, and a shortcut in the wrong folder is
+    // invisible -- so the shell must be the one asked.
+    assert.match(helper, /SpecialFolders\("Desktop"\)/)
+  })
+
+  it('can check before it changes anything, and can put the original back', async () => {
+    const helper = await readFile(at('scripts/make-shortcut.vbs'), 'utf8')
+    // The four mechanical operations, and the backup that makes restoring possible.
+    assert.match(helper, /If action = "scan" Then WScript\.Quit DoScan\(\)/)
+    assert.match(helper, /If action = "apply" Then WScript\.Quit DoApply\(\)/)
+    assert.match(helper, /If action = "create" Then WScript\.Quit DoCreate\(\)/)
+    assert.match(helper, /If action = "restore" Then WScript\.Quit DoRestore\(\)/)
+    assert.match(helper, /WriteBackup\("adopted"/)
+    assert.match(helper, /WriteBackup\("created"/)
+    // Adopting must record the ORIGINAL first, or restore has nothing to replay.
+    assert.ok(helper.indexOf('WriteBackup("adopted"') < helper.indexOf('ApplyOurs(targetLnk)'), 'the original must be recorded before it is overwritten')
+  })
+
+  it('leaves the "which icon is DSH" decision to the testable half', async () => {
+    const helper = await readFile(at('scripts/make-shortcut.vbs'), 'utf8')
+    // A classifier inside a .vbs cannot be unit-tested, and the one that lived here
+    // missed a real desktop shortcut. It now lives in host.js, where it is covered
+    // by classifyShortcut's own tests.
+    assert.doesNotMatch(helper, /LooksLikeDsh|IsOurs\(/)
+    const pure = await readFile(at('src/host.js'), 'utf8')
+    assert.match(pure, /export function classifyShortcut\(/)
+    assert.match(pure, /export function chooseShortcutAction\(/)
+    // The Electron desktop app must stay out of reach: it is a different product.
+    assert.match(pure, /haystack\.includes\('desktop-host'\) \|\| haystack\.includes\('electron'\)/)
+    assert.match(pure, /Refuse rather than guess/)
+  })
+
+  it('keeps the exit codes the host turns into a message', async () => {
+    const helper = await readFile(at('scripts/make-shortcut.vbs'), 'utf8')
+    // 1 and 3 come from the main script; the rest are RETURNED by the action
+    // functions, so asserting `WScript.Quit N` for all of them would be wrong.
+    assert.match(helper, /WScript\.Quit 1/)
+    assert.match(helper, /WScript\.Quit 3/)
+    for (const line of ['DoApply = 2', 'DoApply = 4', 'DoCreate = 2', 'DoCreate = 4', 'DoRestore = 4', 'DoRestore = 6']) {
+      assert.ok(helper.includes(line), `the helper must still return ${line}`)
+    }
+    // The mapping itself is documented where a reader will look for it.
+    assert.match(helper, /Exit codes: 0 fine, 1 bad arguments, 2 launcher missing, 3 no Desktop,/)
+  })
+
+  it('receives the arguments in the order the helper reads them', async () => {
+    const host = await readFile(at('src/index.js'), 'utf8')
+    assert.match(host, /'\/\/nologo', helper, action, launcher, SHORTCUT_BACKUP, SHORTCUT_RESULT, SHORTCUT_NAME, SHORTCUT_DESCRIPTION/)
+    // The shortcut to adopt rides as an extra argument, because the helper decides
+    // nothing by itself.
+    assert.match(host, /if \(targetLnk !== undefined\) args\.push\(targetLnk\)/)
+    // A piped child is the thing that fails inside a sandboxed host, so the
+    // verdict rides on the exit code and a result FILE instead.
+    assert.match(host, /stdio: 'ignore'/)
+    assert.match(host, /cscript\.exe/)
+    // Both files carry a desktop path, so both must be read as UTF-16.
+    assert.match(host, /readFileSync\(SHORTCUT_RESULT, 'utf16le'\)/)
+    assert.match(host, /readFileSync\(SHORTCUT_BACKUP, 'utf16le'\)/)
+  })
+
+  it('wraps the cmd /c command, so cmd cannot strip the quoted program path', async () => {
+    // Measured: `shell.Run "cmd /c " & cmd` never ran anything at all. cmd /c
+    // strips the first and last quote character of a command line holding more than
+    // two quotes, so "C:\Program Files\nodejs\node.exe" was broken in half and the
+    // error went into the mangled redirect target -- a shortcut that silently did
+    // nothing. One extra pair of quotes is the fix, and it is also why the
+    // manual-restart wrapper had never actually worked.
+    for (const file of ['scripts/launch-dsh.vbs', 'scripts/restart-dsh-web.vbs']) {
+      assert.match(
+        await readFile(at(file), 'utf8'),
+        /shell\.Run "cmd \/c """ & cmd & """", 0, False/,
+        `${file} must quote the whole command`,
+      )
+    }
+  })
+
+  it('closes the script path quote before the redirect', async () => {
+    // Measured with a tracing copy of the real file: the command it built was
+    //   "node.exe" "launch-dsh.mjs >> "dsh-power-switch-launch.log" 2>&1
+    // -- the script path never closed. node was then asked to run a file whose name
+    // contains a redirect, the redirect itself was swallowed, and the failure left
+    // NOTHING in any log, which is why double-clicking the shortcut looked like it
+    // did nothing at all. An extra pair of quotes around the whole command is NOT
+    // enough on its own.
+    const vbs = await readFile(at('scripts/launch-dsh.vbs'), 'utf8')
+    assert.match(vbs, /& script & """ >> """ & logFile &/)
+    assert.doesNotMatch(vbs, /& script & " >> """/)
+  })
+
+  it('never lets the card choose a target, a path or a name', async () => {
+    const host = await readFile(at('src/index.js'), 'utf8')
+    assert.match(host, /createShortcutHandler\(\{ run: \(action\) => runShortcutHelper\(action, note\) \}\)/)
+    assert.match(host, /const SHORTCUT_NAME = 'DSH 启动器'/)
+    // Only the operation travels from the card, and only from a fixed list.
+    const pure = await readFile(at('src/host.js'), 'utf8')
+    assert.match(pure, /SHORTCUT_ACTIONS = \['scan', 'install', 'restore'\]/)
+    assert.match(pure, /action must be "scan", "install" or "restore"/)
+  })
+})

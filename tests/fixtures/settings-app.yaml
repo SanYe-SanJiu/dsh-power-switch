@@ -1,0 +1,9 @@
+# A stand-in for DSH's settings document, with the trap the parser has to survive:
+# another namespace declares its OWN launchMode first. Matching by indentation
+# rather than by key name is what keeps the two apart.
+other-plugin:
+  launchMode: tab
+  enabled: true
+dsh-power-switch:
+  launchMode: app
+  delayMs: 1000

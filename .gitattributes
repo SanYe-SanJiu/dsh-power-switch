@@ -1,0 +1,8 @@
+# Keep every shipped file BYTE-EXACT.
+#
+# The three `.vbs` wrappers must stay ASCII with no BOM and the line endings they
+# were tested with: wscript decodes them as ANSI, and the test suite asserts
+# byte-level properties of them. A checkout that silently rewrote their line
+# endings would be a difference nobody would see in a diff but the plugin would
+# feel, so no EOL conversion is applied anywhere in this repository.
+* -text

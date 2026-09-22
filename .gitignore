@@ -1,0 +1,16 @@
+# Runtime state. It belongs to the machine that ran the plugin, not to the repo:
+# `restart-dsh.log` carries authenticated `?token=…` URLs and the local user's
+# paths, and the shortcut records name a real desktop. Newer builds keep these
+# under $DSH_HOME/storages/dsh-power-switch/, but they are listed here too so a
+# checkout that ran an older build can never commit them.
+node_modules/
+restart-dsh.log
+dsh-web*.log
+restart-handshake-*.txt
+shortcut-backup.txt
+shortcut-result.txt
+
+# Editor and OS noise.
+*.swp
+Thumbs.db
+desktop.ini
