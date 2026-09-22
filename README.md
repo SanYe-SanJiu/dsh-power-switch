@@ -198,53 +198,6 @@ assembly and `ctx.appExit`), `tests/client.test.mjs` (card registration and inte
 and `tests/package.test.mjs` (artifact layout, `src`/`lib` agreement, and compiling the
 generated supervisor source).
 
-### Pitfalls (all of them measured)
-
-- **Never promise more than you can deliver.** The restart supervisor wrote its
-  handshake — "somebody is now responsible, you may exit" — and only then started the
-  replacement. A failed `spawn` is ASYNCHRONOUS, so the host exited, nothing took over,
-  and DSH stayed down for good. The check (is the recorded command usable?) now runs
-  BEFORE the handshake: refusing keeps the running host alive.
-- **Do not rebuild what the host can state for itself.** The command used to be
-  `<checkout>/apps/cli/lib/bin.js`, a path only a DSH source checkout has. The host now
-  records its own argv/execPath/cwd (`boot.json`) and the supervisor replays it.
-- **"Works on my machine" is not "works on theirs".** A publish-readiness pass found
-  three assumptions of the same family, each now a runtime fact or a full search:
-  (1) the port was hard-coded to 3080 — the host now hands the helper the port it really
-  serves on; (2) browsers were looked for in `%ProgramFiles%` only, but a per-user Chrome
-  or Edge install lives in `%LOCALAPPDATA%` — that is now searched first; (3) the `.vbs`
-  wrappers assumed `%ProgramFiles%\nodejs\node.exe`, so the host records its own
-  `process.execPath` and they read that first (nvm/fnm/volta/Store all work).
-  One more of the same kind: the host's log location is chosen by whatever STARTED the
-  host, so the live host is found both through the URL the host recorded for itself and
-  by scanning its own cwd from `boot.json` — one location alone produced
-  `no host token URL in any log` on a real machine.
-- **Keep runtime state out of the package.** The log carries `?token=…` URLs, so a log in
-  the package is a token in the repository — and the package may be read-only. It lives in
-  `$DSH_HOME/storages/dsh-power-switch/`.
-- **`os` must match what the code actually does.** If only Windows can run all of it, do
-  not claim three platforms: a stranger would install it and get half a feature, silently.
-- **A seat is shared.** `sidebar.footer.action` also holds `dsh-cost-meter`'s budget box
-  (`min-width: 148px`); anything added to that row must claim **no width**
-  (`flex: none; width: auto`), or it squeezes the neighbour away. This plugin's button is
-  a fixed 36px.
-- **Wrap `slots.inject` in try/catch**: a composition without that seat must be able to
-  skip it, with the card and the routes still working.
-- **No backticks inside a template literal.** This package has two big ones (the CSS and
-  the generated supervisor source); a backtick in a comment truncates the string, and
-  `node --check` only ever sees the outer file. Both were hit.
-- **`shell.Run "cmd /c " & cmd` strips quotes**: use
-  `shell.Run "cmd /c """ & cmd & """", 0, False`, and keep every quote inside the `.vbs`
-  paired (a missing closing quote fails just as silently).
-- **A `.vbs` may contain ASCII only**: wscript decodes it as ANSI and a Chinese name
-  becomes mojibake on the desktop. All text is passed in as arguments (those are UTF-16).
-- **Keep classification in testable JS**, not in a `.vbs`: a classifier inside VBScript
-  cannot be unit-tested, and an untestable one is exactly how a real desktop shortcut was
-  missed.
-- **Do not edit this repository's non-ASCII files through a PowerShell text pipeline**:
-  PowerShell 5.1 decodes `Get-Content -Raw` as ANSI and writes the mojibake back. Use an
-  editor.
-
 ## License
 
 MIT
