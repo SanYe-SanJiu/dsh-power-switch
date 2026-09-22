@@ -22,17 +22,28 @@
 
 ## 安装
 
-```sh
-dsh plugin --profile web add <本包路径>
-# 发布到 GitHub 之后：
-dsh plugin --profile web add github:<你的名字>/dsh-power-switch
+```powershell
+# 从 GitHub 安装（推荐）
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+
+# 从本地检出安装（自己改代码时；link: 保持指向检出目录，不做拷贝）
+dsh plugin --profile web add link:../dsh-power-switch
 ```
+
+- `--profile` 是**必填的**；Web UI 就是 `web`（`dsh web` 等于 `dsh --profile web`）。
+- `add` 后面的参数**原样转发给 pnpm**，所以 npm 名、`github:owner/repo`、`link:路径`、tarball URL 都能用；
+  相对路径（`./x`、`../x`、`link:../x`）按**你运行命令时所在的目录**解析，不是在 profile 目录里解析。
+- 装完 DSH 会自动把这个包加进 profile 的 `dsh.profile.bundles`（因为它声明了 `dsh.bundle.patch`），
+  **不用手改任何 JSON**；如果某个包没声明 bundle patch，DSH 会打印一行警告说它只会作为普通依赖存在。
+- 本仓库的 `lib/` 是随代码一起提交的，所以从 GitHub 安装**不需要构建步骤**，也不会遇到 pnpm 的
+  allowBuilds 拦截。
 
 装完重启一次 DSH，然后打开 **设置 → 插件**：卡片在列表里（标签「DSH 电源按钮」），
 侧边栏页脚也会出现 `⏻`。
 
-> `dsh plugin` 会写 `$DSH_HOME/profiles/<profile>/`；如果 dsh 带着沙箱运行，请在普通终端里执行。
-> 本包的 `lib/` 是随仓库一起提交的，所以从 GitHub 安装不需要任何构建步骤。
+> 卸载：`dsh plugin --profile web remove dsh-power-switch`。
+> `dsh plugin` 会写 `$DSH_HOME/profiles/web/`；如果 dsh 带着沙箱运行，请在普通终端里执行。
+> 注意：**别在同一个 profile 上同时装 GitHub 版和本地 `link:` 版**——包名相同，后装的会替换先装的。
 
 ## 关闭进程
 

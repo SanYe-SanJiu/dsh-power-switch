@@ -27,18 +27,34 @@ browser paths and a `.desktop` equivalent.
 
 ## Install
 
-```sh
-dsh plugin --profile web add <path to this package>
-# once it is on GitHub:
-dsh plugin --profile web add github:<owner>/dsh-power-switch
+```powershell
+# from GitHub (recommended)
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+
+# from a local checkout, when you are editing the code
+# (`link:` keeps pointing at the checkout instead of copying it)
+dsh plugin --profile web add link:../dsh-power-switch
 ```
+
+- `--profile` is **required**; the Web UI profile is `web` (`dsh web` means `dsh --profile web`).
+- The arguments after `add` are **forwarded to pnpm verbatim**, so an npm name, a
+  `github:owner/repo` spec, a `link:path` and a tarball URL all work. A relative path
+  (`./x`, `../x`, `link:../x`) is resolved against the directory you RUN the command in,
+  not against the profile directory.
+- Installation registers the bundle for you: DSH appends the package to the profile's
+  `dsh.profile.bundles` because it declares `dsh.bundle.patch`, so **no JSON editing**.
+  A package without a bundle patch gets a warning that it is only a plain dependency.
+- `lib/` is committed with this repository, so a GitHub install needs **no build step** —
+  and therefore never trips pnpm's allowBuilds prompt.
 
 Restart DSH once, then open **Settings -> Plugins**: the card is in the list (labelled
 "DSH power button"), and the `⏻` button appears in the sidebar foot.
 
-> `dsh plugin` writes into `$DSH_HOME/profiles/<profile>/`; if dsh runs under a sandbox,
-> run it from an ordinary terminal. `lib/` is committed with the repository, so a GitHub
-> install needs no build step.
+> Uninstall with `dsh plugin --profile web remove dsh-power-switch`.
+> `dsh plugin` writes into `$DSH_HOME/profiles/web/`; if dsh runs under a sandbox, run it
+> from an ordinary terminal. And do **not** install the GitHub copy into a profile that
+> already links your development checkout — the package name is the same, so the second
+> install replaces the first.
 
 ## Shutting down
 
