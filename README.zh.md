@@ -2,23 +2,24 @@
 
 [English](README.md) | 中文
 
-给 DeepSeek Harness（DSH）加一个**一键关闭**按钮，外加**启动方式切换**。
+DeepSeek Harness（DSH）插件，提供两项功能：
 
-- **侧边栏页脚**里有一个 `⏻` 按钮：点一下（二次确认）关闭本机的 `dsh web` 进程。
-  它走 DSH 自己的优雅退出通道（`ctx.appExit`），会话先落盘再退出。
-- **设置 → 插件页**的卡片里有**一个切换按钮**：在「应用窗口 / 普通标签页」之间切换下次启动方式。
-  点一次会做三件事：保存设置 → 自动改好桌面快捷方式 → 重启 DSH。
+- **关闭进程**：侧边栏页脚的 `⏻` 按钮（二次确认）经 DSH 自身的优雅退出通道关闭本机 `dsh web` 进程，会话与设置先落盘。
+- **启动方式切换**：设置 → 插件页卡片上的切换按钮，在「应用窗口 / 普通标签页」之间切换下次启动方式。单次点击完成：保存设置 → 更新桌面快捷方式 → 重启 DSH。
 
-两个按钮各管一件事：侧边栏只管关闭，卡片只管切换。
+## 平台支持
 
-## 平台
+仅支持 Windows。`package.json` 声明 `"os": ["win32"]`，其他平台无法安装。
 
-**仅 Windows。** `package.json` 的 `os` 就是 `["win32"]`，别的系统直接装不上。
+应用窗口模式依赖桌面快捷方式（Windows Script Host 与 `.lnk`），当前没有等价实现。关闭进程功能本身不依赖平台（通过 `ctx.appExit`，不调用 shell），但为避免在 macOS/Linux 上安装后核心功能静默失效，本包明确声明不支持；后续如需支持，需补充 `open`/`xdg-open`、macOS 浏览器路径与 `.desktop` 等价实现。
 
-原因很直接：应用窗口那半边依赖桌面快捷方式（Windows Script Host + `.lnk`），
-非 Windows 上没有等价实现；关闭进程那半边其实是跨平台的（走 `ctx.appExit`，不碰 shell），
-但我们不想让 macOS/Linux 用户装上以后发现核心功能是空的，所以干脆声明不支持。
-以后要支持的话，得先补 `open`/`xdg-open`、macOS 浏览器路径和 `.desktop` 等价物。
+## 环境要求
+
+| 项目 | 要求 |
+|---|---|
+| 操作系统 | Windows 10 或更高 |
+| DSH | `>=0.1.0-rc.6`（见 `package.json` 的 `engines.dsh`） |
+| Node.js | `>=20` |
 
 ## 安装
 
@@ -26,185 +27,160 @@
 # 从 GitHub 安装（推荐）
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
-# 钉到某个提交：git 安装会被 pnpm 缓存，重复 add 不一定刷新，钉住也更好复现
+# 指定提交：git 安装由 pnpm 缓存，重复 add 不保证刷新；指定提交也可复现
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
 
-# 从本地检出安装（自己改代码时；link: 保持指向检出目录，不做拷贝）
-dsh plugin --profile web add link:../dsh-power-switch
+# 从本地检出安装（用于开发；link: 保持指向检出目录，不复制）
+dsh plugin --profile web add link:<本包检出的绝对路径>
 ```
 
-- `--profile` 是**必填的**；Web UI 就是 `web`（`dsh web` 等于 `dsh --profile web`）。
-- `add` 后面的参数**原样转发给 pnpm**，所以 npm 名、`github:owner/repo[#ref]`、`link:路径`、tarball URL 都能用；
-  相对路径（`./x`、`../x`、`link:../x`）按**你运行命令时所在的目录**解析，不是在 profile 目录里解析。
-- 装完 DSH 会自动把这个包加进 profile 的 `dsh.profile.bundles`（因为它声明了 `dsh.bundle.patch`），
-  **不用手改任何 JSON**；没声明 bundle patch 的包会收到一行"只会作为普通依赖存在"的警告。
-- 本仓库的 `lib/` 是随代码一起提交的，所以从 GitHub 安装**不需要构建步骤**，也不会遇到 pnpm 的
-  allowBuilds 拦截。
+说明：
 
-### 装不上时的两种情况和对应的一次性开关
+- `--profile` 为必填项；Web UI 对应的 profile 名为 `web`（`dsh web` 等价于 `dsh --profile web`）。
+- `add` 之后的参数原样转发给 pnpm，因此 npm 包名、`github:owner/repo[#ref]`、`link:路径` 与 tarball URL 均可使用。相对路径（`./x`、`../x`、`link:../x`）以执行命令时的工作目录为基准解析，而非以 profile 目录为基准。
+- 安装完成后，DSH 会自动将该包加入 profile 的 `dsh.profile.bundles`（该包声明了 `dsh.bundle.patch`），无需手工编辑 JSON。未声明 bundle patch 的包会收到"仅作为普通依赖安装"的提示。
+- 仓库中包含构建产物 `lib/`，因此从 GitHub 安装不需要构建步骤，也不会触发 pnpm 的 allowBuilds 拦截。
 
-**① `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`** —— profile 里有一个"刚发布不久"的插件版本时，
-pnpm 的安全等待期会在改动前校验整个锁文件，于是**任何插件改动都会被拒**（连卸载别的插件也一样）。
-加一个一次性放行即可：
+### 安装失败时的两种情形
+
+**① `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`**
+
+profile 中存在发布未满 pnpm 等待期的插件版本时，pnpm 会在任何改动前校验整个锁文件，导致所有插件操作被拒绝（包括卸载其他插件）。可对本次命令放行：
 
 ```powershell
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minimum-release-age=0
 ```
 
-> ⚠️ 必须用**中划线**拼写。`--config.minimumReleaseAge=0`（驼峰）在 pnpm ≥12.3 上会被**静默忽略**，
-> 你会以为开关生效了却报一模一样的错。
-> 也别照提示跑 `pnpm clean --lockfile` —— 那会重新解析整个 profile，把其它插件一起换版。
+必须使用连字符拼写：驼峰形式 `--config.minimumReleaseAge=0` 在 pnpm ≥ 12.3 中会被静默忽略，开关看似生效但报错不变。另不建议按提示执行 `pnpm clean --lockfile`，该命令会重新解析整个 profile，一并更换其他插件版本。
 
-**② 网络慢**（`github:` 安装会拉**整个仓库**）——撞上 pnpm 默认 60 秒的抓取超时，再加一个：
+**② 网络较慢**
+
+`github:` 安装需拉取整个仓库，可能超过 pnpm 默认 60 秒的抓取超时。追加第二个一次性开关：
 
 ```powershell
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minimum-release-age=0 --config.fetchTimeout=600000
 ```
 
-装完**重启一次 DSH**，然后打开 **设置 → 插件**：卡片在列表里（标签「DSH 电源按钮」），
-侧边栏页脚也会出现 `⏻`。
+安装完成后重启一次 DSH，打开 **设置 → 插件**：列表中会出现标签为「DSH 电源按钮」的卡片，侧边栏页脚会出现 `⏻`。
 
-> **怎么确认装的是 GitHub 版**：profile 的 `dsh.profile.bundles` 里有它，且
-> `node_modules\dsh-power-switch` 是**真实目录**（本地 `link:` 版是 junction）。
-> **卸载 / 换回本地开发版**：`dsh plugin --profile web remove dsh-power-switch`，再
-> `dsh plugin --profile web add link:G:/test/c/dsh-power-switch`（两步都带上上面的一次性开关）。
-> **别在同一个 profile 上同时装 GitHub 版和本地 `link:` 版**——包名相同，后装的会替换先装的。
-> `dsh plugin` 会写 `$DSH_HOME/profiles/web/`；如果 dsh 带着沙箱运行，请在普通终端里执行。
+### 安装校验与卸载
+
+- 校验：profile 的 `dsh.profile.bundles` 中包含本插件，且 `node_modules\dsh-power-switch` 为普通目录（本地 `link:` 安装为符号链接或 junction）。
+- 卸载：`dsh plugin --profile web remove dsh-power-switch`。
+- 切换回本地检出：先卸载，再执行 `dsh plugin --profile web add link:<本包检出的绝对路径>`；两步均建议附带上述一次性开关。
+- 同一 profile 中不要同时安装 GitHub 版本与本地 `link:` 版本：包名相同，后安装者会替换先安装者。
+
+> `dsh plugin` 会写入 `$DSH_HOME/profiles/web/`；若 dsh 运行于沙箱环境，请在普通终端中执行。
 
 ## 关闭进程
 
-三个入口都能关，效果一样：侧边栏 `⏻`、卡片里的「关闭 DSH 进程」按钮、以及插件自己的
-`POST /api/dsh-power-switch/shutdown` 路由。它们都会：
+侧边栏 `⏻`、卡片中的「关闭 DSH 进程」按钮，以及 `POST /api/dsh-power-switch/shutdown` 路由，三者行为一致：
 
-1. 先回答请求，再开始退出（所以页面能收到「已发出关闭请求」，超过 10 秒没有回应则报失败）；
-2. 走优雅退出：会话与设置先落盘、插件树先卸载；
-3. 万一优雅退出卡住，看门狗会在超时后强制结束进程。
+1. 先返回响应，再开始退出（页面因此能收到「已发出关闭请求」；超过 10 秒无响应则报告失败）；
+2. 走优雅退出：会话与设置先落盘，插件树先卸载；
+3. 若优雅退出停滞，看门狗在超时后强制结束进程。
 
-`appExit` 是宿主在启动过程中逐步就绪的。极早期（服务刚起来、它还没注册）按下关闭，
-插件会退回 `SIGTERM`——这是在日志里实测到过的（`no appExit service; sending SIGTERM to self`），
-下一次读取就到手了。要"一定优雅"的话，等服务起来几秒再按。
+`appExit` 服务在宿主启动过程中逐步就绪。服务刚启动、该服务尚未注册时触发关闭，插件会退回 `SIGTERM`（实测日志为 `no appExit service; sending SIGTERM to self`）。如需确保优雅退出，可在启动数秒后再执行关闭。
 
-**应用窗口**模式下，页面会在进程走后自动关掉自己；**普通标签页**不行——浏览器不允许页面关闭
-「你自己打开」的标签页，所以卡片会提示按 **Ctrl+W**。这是浏览器的规则，不是插件没做。
+应用窗口模式下，进程退出后页面自动关闭；普通标签页模式下，浏览器不允许页面关闭由用户打开的标签页，因此卡片提示按 **Ctrl+W**。这属于浏览器行为限制。
 
 ## 启动方式：应用窗口 / 普通标签页
 
 | | 应用窗口 | 普通标签页 |
 |---|---|---|
-| 打开方式 | Chromium 的 `--app=`（无地址栏、无标签栏） | 默认浏览器的一个标签页 |
-| 关闭进程后 | **页面自己消失** | 需要你按 Ctrl+W |
+| 打开方式 | Chromium `--app=`（无地址栏与标签栏） | 默认浏览器的标签页 |
+| 关闭进程后 | 页面自动关闭 | 需按 Ctrl+W |
 
-卡片里点一次切换按钮就会：**保存设置 → 改好桌面快捷方式 → 立即重启 DSH**。
-设置写进 `$DSH_HOME/settings.yaml` 的 `dsh-power-switch` 段，同时更新组合入口，
-所以即使宿主的 settings 服务不可用，重启后也仍然按你选的方式打开。
+卡片上的切换按钮一次点击完成三件事：保存设置、更新桌面快捷方式、重启 DSH。设置写入 `$DSH_HOME/settings.yaml` 的 `dsh-power-switch` 段，同时更新组合入口，因此宿主的 settings 服务不可用时，重启后仍按所选方式打开。
 
-**"无法安全重启"时它会拒绝，而不是把服务丢下。** 重启助手必须先向宿主证明"有人接手了"，
-宿主才肯退出；证明来不了就返回 500 并继续服务。三种拒绝各有一句人话说明（卡片里直接显示）：
+### 无法安全重启时会拒绝执行
 
-- 这个 DSH 不是以 `dsh web` 命令行启动的（例如桌面版）→ 无法重放启动命令；
-- 重启助手没启动起来；
-- 重启助手启动了但没有确认就位。
+重启助手必须先向宿主确认接管，宿主才会退出；确认未到达时，路由返回 500 并继续提供服务。三种拒绝原因分别对应卡片上的一条说明：
 
-无论哪种，**关闭进程功能不受影响**，设置也已经保存下来了。
+- 当前 DSH 不是以 `dsh web` 命令行方式启动（例如桌面版），无法重放启动命令；
+- 重启助手未能启动；
+- 重启助手已启动但未确认就位。
 
-**桌面快捷方式会自动处理**（不用你手动改）：切到应用窗口时**接管**你已有的那个 DSH 图标
-（没有就新建一个 `DSH 启动器`），切回标签页时**还原**成你原来的启动方式。原来的目标、参数、
-图标与描述会先记进状态目录里的 `shortcut-backup.txt`，随时可还原。
+任一情形下，关闭进程功能不受影响，且设置已经保存。
 
-### 为什么需要桌面快捷方式这一步
+### 桌面快捷方式
 
-`dsh web` 自己会把 URL 交给**默认浏览器**，所以它永远开一个**标签页**：它没有 app 窗口选项，
-那个 hand-off 还是用清空环境变量的平台 opener 启动的，插件拦不住。所以「下次启动用什么形态」
-只能由**谁启动 dsh** 决定——本包的启动器 `scripts/launch-dsh.mjs`（外壳 `launch-dsh.vbs`）
-负责：读设置里的模式 → 没在跑就按**记录下来的启动命令**起服务 → 等宿主打印 token → 按模式开窗口。
+切换到应用窗口时接管已有的 DSH 快捷方式（不存在时新建 `DSH 启动器`），切回普通标签页时还原为原有启动方式。接管前的目标、参数、图标与描述记录在状态目录的 `shortcut-backup.txt` 中，可随时还原。
 
-"按记录下来的启动命令"是关键：插件运行时会把自己是怎么被启动的（`process.execPath`、
-argv、cwd）写进状态目录的 `boot.json`，启动器原样重放。早期版本是**拼**出来的
-（`<检出目录>/apps/cli/lib/bin.js`），那只在源码检出里存在，别人机器上必然起不来。
+需要这一层的原因：`dsh web` 将 URL 交给默认浏览器，因此始终打开标签页；它没有应用窗口选项，且该交接由使用清空环境变量的平台 opener 启动，插件无法拦截。因此「下次启动的窗口形态」只能由启动 dsh 的一方决定，即本包提供的启动器 `scripts/launch-dsh.mjs`（外壳 `launch-dsh.vbs`）：读取设置中的模式 → 未运行服务时按记录的启动命令启动 → 等待宿主输出 token → 按模式打开窗口。
 
-也可以在命令行直接用（不经过快捷方式）：
+「按记录的启动命令」指插件运行时将自身的启动信息（`process.execPath`、argv、cwd）写入状态目录的 `boot.json`，启动器原样重放。早期实现为拼接 `<检出目录>/apps/cli/lib/bin.js`——该路径仅存在于 DSH 源码检出中，其他安装方式下必然失败。
+
+启动器也可直接在命令行使用：
 
 ```powershell
-node scripts/launch-dsh.mjs          # 按设置里的模式
-node scripts/launch-dsh.mjs --app    # 这次强制应用窗口
-node scripts/launch-dsh.mjs --tab    # 这次强制标签页
-node scripts/launch-dsh.mjs --cli D:\dsh\apps\cli\lib\bin.js   # 指定 CLI 入口
+node scripts/launch-dsh.mjs                            # 按设置中的模式
+node scripts/launch-dsh.mjs --app                      # 本次强制应用窗口
+node scripts/launch-dsh.mjs --tab                      # 本次强制普通标签页
+node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 ```
 
-它不会重复启动：已经有宿主在跑就只开窗口；端口有人应答但找不到活着的 token 就**拒绝启动**
-并说明原因，而不是硬起第二个。
+启动器不会重复启动实例：已有宿主在运行时仅打开窗口；端口有响应但无法获取有效 token 时拒绝启动并输出原因。
 
 ## 状态与日志
 
-运行时状态全部放在 **`$DSH_HOME/storages/dsh-power-switch/`**（不在包目录里）：
+运行时状态位于 **`$DSH_HOME/storages/dsh-power-switch/`**，不在包目录内：
 
 | 文件 | 内容 |
 |---|---|
 | `restart-dsh.log` | 插件、重启助手与监督进程共用的诊断日志 |
-| `boot.json` | 最近一次宿主的启动命令（启动器与监督进程都用它） |
-| `token-url.txt` | **宿主自己记下的本次认证 URL**——helper 与启动器靠它确认"哪个进程正在服务" |
-| `node-path.txt` | **宿主正在用的 node.exe 路径**——两个 `.vbs` 外壳读它，所以 nvm/fnm/volta/Store 装的 Node 也能双击启动 |
-| `dsh-web.<时间>.log` | 每次接管的宿主自己的 stdout（里面有本次的 token URL） |
+| `boot.json` | 最近一次宿主的启动命令（启动器与监督进程使用） |
+| `token-url.txt` | 宿主记录的本次认证 URL（助手与启动器据此确认服务进程） |
+| `node-path.txt` | 宿主当前使用的 node.exe 路径；两个 `.vbs` 外壳读取该文件，因此经 nvm/fnm/volta 或应用商店安装的 Node 也可由快捷方式启动 |
+| `dsh-web.<时间戳>.log` | 由本插件启动的各次宿主的 stdout（包含该次运行的 token URL） |
 | `shortcut-backup.txt` | 接管前的原始快捷方式，用于还原 |
 | `shortcut-result.txt` | 最近一次快捷方式操作的原始结果 |
 
-放在包外有两个原因：包可能装在只读的 store 里；而这份日志**带 token URL 和本机路径**，
-写在包目录就等于写进版本库。
+状态文件置于包外的原因：包可能位于只读存储中；且日志包含认证 token URL 与本机路径，写入包目录等同于写入版本库。
 
 ## 配置
 
 卡片配置页，或 loader row 的 `config:`：
 
-| 键 | 默认 | 说明 |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `launchMode` | `tab` | 下次启动用什么窗口：`tab` / `app` |
-| `delayMs` | `1000` | 收到关闭请求后等多少毫秒再退出（先把响应送出去） |
+| `launchMode` | `tab` | 下次启动的窗口形态：`tab` / `app` |
+| `delayMs` | `1000` | 收到关闭请求后等待多少毫秒再退出（用于先送出响应） |
 | `exitCode` | `0` | 进程退出码 |
-| `hard` | `false` | 跳过优雅退出，直接强制结束 |
+| `hard` | `false` | 跳过优雅退出，直接结束进程 |
 
-卡片按关闭按钮时请求的是 700ms（比默认更快让 UI 有反应），`delayMs` 是宿主的默认值。
+卡片的关闭按钮请求 700ms（使界面更快响应）；`delayMs` 为宿主的默认值。
 
 环境变量：
 
-- `DSH_POWER_SWITCH_NO_WINDOW=1`：让**这一次**启动不开窗口；
-- `DSH_POWER_SWITCH_WINDOW_HANDLED=1`：表示窗口已由别人负责（启动器与监督进程会设它，
-  插件看到就不再开第二个）；
-- `DSH_POWER_SWITCH_CLI`：本机没记录过启动命令时，指向 `dsh` 的 CLI 入口；
-- `DSH_POWER_SWITCH_PORT`：探活的端口（默认 3080）。
-- 内部使用（助手与监督进程之间）：`DSH_POWER_SWITCH_LAUNCH_MODE`、`_DELAY`、`_HOST_LOG`、
-  `_HANDSHAKE`。这些不是给你调的。
+| 变量 | 说明 |
+|---|---|
+| `DSH_POWER_SWITCH_NO_WINDOW=1` | 本次启动不打开窗口 |
+| `DSH_POWER_SWITCH_WINDOW_HANDLED=1` | 窗口已由其他进程负责；启动器与监督进程会设置该项，插件不再打开第二个窗口 |
+| `DSH_POWER_SWITCH_CLI` | 未记录启动命令时，指定 `dsh` 的 CLI 入口 |
+| `DSH_POWER_SWITCH_PORT` | 探活端口（默认 3080） |
+| `DSH_POWER_SWITCH_LAUNCH_MODE`、`_DELAY`、`_HOST_LOG`、`_HANDSHAKE` | 助手与监督进程之间的内部接口，无需设置 |
 
 ## 安全边界
 
-四条路由（`GET /config`、`POST /shutdown`、`POST /restart`、`POST /shortcut`）的共同底线是
-**只接受本机 loopback 请求**：对端必须是 `127.0.0.1`/`::1`，出现任何转发头（`forwarded`、
-`x-forwarded-for`、`x-real-ip`、`x-forwarded-host`）一律拒绝。
+四条路由（`GET /config`、`POST /shutdown`、`POST /restart`、`POST /shortcut`）的共同要求是仅接受本机 loopback 请求：对端必须为 `127.0.0.1`/`::1`；出现任何转发头（`forwarded`、`x-forwarded-for`、`x-real-ip`、`x-forwarded-host`）一律拒绝。
 
-**写**路由（`shutdown`/`restart`/`shortcut`）更严一档：`Origin` 必须与 `Host` 完全一致。
-**读**路由 `GET /config` 允许缺 `Origin`（有些宿主自己发起请求时不带），但同样要求 loopback
-且拒绝转发头——这一点与写路由不同，代码注释里写明了原因。
+写路由（`shutdown`/`restart`/`shortcut`）额外要求 `Origin` 与 `Host` 完全一致。读路由 `GET /config` 允许缺少 `Origin`（部分宿主自身发起的请求不带该头），但仍要求 loopback 并拒绝转发头；该差异在代码注释中说明。
 
-`POST /shortcut` 是唯一会在包外落文件的路由，所以它的请求体只允许一个**固定动作**
-（`scan` / `install` / `restore`）——目录、文件名、目标与参数全部由宿主从自己的安装位置推导，
-卡片一个都指定不了。
+`POST /shortcut` 是唯一会在包外产生文件的路由，其请求体只接受一个固定动作（`scan` / `install` / `restore`）；目录、文件名、目标与参数均由宿主根据自身安装位置推导，客户端无法指定。
 
-插件不读凭据、不联网、不访问会话内容。
+插件不读取凭据、不进行网络请求、不访问会话内容。
 
 ## 开发
 
 ```sh
-npm run build                            # 把 src/ 拷成 lib/
-node scripts/run-tests.mjs               # 四个套件（node:test）
-node scripts/verify-client-artifact.mjs  # 经真实 HTTP 取出 client.js 并渲染两个视图
-node scripts/verify-live.mjs             # 给正在运行的 DSH 做体检
+npm run build                            # 将 src/ 复制为 lib/（宿主半产物）
+node scripts/run-tests.mjs               # 四个测试套件（node:test）
+node scripts/verify-client-artifact.mjs  # 经真实 HTTP 获取 client.js 并渲染两个视图
+node scripts/verify-live.mjs             # 对运行中的 DSH 做健康检查
 ```
 
-`client.js` 是手写的 lazy-CJS factory 产物（`window.__ModuleLoader__.load`），不需要构建步骤。
-`tests/` 不随 npm 包发布，所以 `npm test` 要在检出目录里跑。四个套件：
-`tests/host.test.mjs`（围栏、参数解析、调度器、路由、重启用命令）、
-`tests/host-wiring.test.mjs`（插件装配与 `ctx.appExit`）、
-`tests/client.test.mjs`（卡片注册与交互）、
-`tests/package.test.mjs`（产物布局、`src`/`lib` 一致性、把生成的监督进程源码编译一遍）。
+`client.js` 为手写的 lazy-CJS factory 产物（`window.__ModuleLoader__.load`），无需构建步骤。`tests/` 不随 npm 包发布，因此 `npm test` 需在检出目录中执行。测试套件：`tests/host.test.mjs`（请求围栏、参数解析、调度器、路由、重启用命令）、`tests/host-wiring.test.mjs`（插件装配与 `ctx.appExit`）、`tests/client.test.mjs`（卡片注册与交互）、`tests/package.test.mjs`（产物布局、`src`/`lib` 一致性、生成的监督进程源码编译）。
 
 ## 许可证
 

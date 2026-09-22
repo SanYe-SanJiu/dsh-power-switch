@@ -2,187 +2,143 @@
 
 English | [中文](README.zh.md)
 
-A DeepSeek Harness (DSH) plugin that adds a **one-click shutdown** button, plus a
-**launch-mode switch**.
+A DeepSeek Harness (DSH) plugin providing two features:
 
-- A `⏻` button in the **sidebar foot**: one press (confirmed) shuts this machine's
-  `dsh web` process down. It goes through DSH's own graceful exit (`ctx.appExit`), so
-  sessions flush to disk first.
-- **One switch button** on the **Settings -> Plugins** card toggles how the *next*
-  launch opens: app window or normal tab. One press saves the setting, fixes the
-  desktop shortcut and restarts DSH.
+- **Process shutdown**: a `⏻` button in the sidebar foot (with confirmation) that shuts down the local `dsh web` process through DSH's own graceful exit path, so sessions and settings are flushed first.
+- **Launch mode switch**: a switch on the Settings -> Plugins card that selects how the next launch opens — an app window or a normal tab. A single press saves the setting, updates the desktop shortcut and restarts DSH.
 
-Two buttons, two jobs: the sidebar only shuts down, the card only switches.
+## Platform support
 
-## Platform
+Windows only. `package.json` declares `"os": ["win32"]`, so other platforms cannot install it.
 
-**Windows only.** `package.json` declares `"os": ["win32"]`, so nothing else installs it.
+App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), for which there is no equivalent yet. The shutdown feature itself is platform-independent (it goes through `ctx.appExit` and never calls a shell), but shipping a plugin whose primary feature would silently degrade on macOS/Linux is worse than declaring no support. Adding it later requires `open`/`xdg-open`, macOS browser paths and a `.desktop` equivalent.
 
-The reason is the launch-mode half: app windows depend on a desktop shortcut, which is
-Windows Script Host plus `.lnk`, and there is no equivalent here yet. The shutdown half
-is genuinely portable (it goes through `ctx.appExit` and never touches a shell), but
-shipping a plugin whose headline feature silently degrades on macOS/Linux would be worse
-than refusing to install. Supporting them later means adding `open`/`xdg-open`, macOS
-browser paths and a `.desktop` equivalent.
+## Requirements
+
+| Item | Requirement |
+|---|---|
+| Operating system | Windows 10 or later |
+| DSH | `>=0.1.0-rc.6` (see `engines.dsh` in `package.json`) |
+| Node.js | `>=20` |
 
 ## Install
 
 ```powershell
-# from GitHub (recommended)
+# From GitHub (recommended)
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
-# pinned to a commit: git installs are cached by pnpm, so a plain re-add does not
-# always refresh, and a pinned ref is reproducible
+# Pinned to a commit: git installs are cached by pnpm, so a repeated add is not
+# guaranteed to refresh; a pinned commit is also reproducible
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
 
-# from a local checkout, when you are editing the code
-# (`link:` keeps pointing at the checkout instead of copying it)
-dsh plugin --profile web add link:../dsh-power-switch
+# From a local checkout (for development; link: keeps pointing at the checkout
+# instead of copying it)
+dsh plugin --profile web add link:<absolute path to this checkout>
 ```
 
-- `--profile` is **required**; the Web UI profile is `web` (`dsh web` means `dsh --profile web`).
-- The arguments after `add` are **forwarded to pnpm verbatim**, so an npm name, a
-  `github:owner/repo[#ref]` spec, a `link:path` and a tarball URL all work. A relative path
-  (`./x`, `../x`, `link:../x`) is resolved against the directory you RUN the command in,
-  not against the profile directory.
-- Installation registers the bundle for you: DSH appends the package to the profile's
-  `dsh.profile.bundles` because it declares `dsh.bundle.patch`, so **no JSON editing**.
-  A package without a bundle patch gets a warning that it is only a plain dependency.
-- `lib/` is committed with this repository, so a GitHub install needs **no build step** —
-  and therefore never trips pnpm's allowBuilds prompt.
+Notes:
 
-### If the install fails: two cases, one one-shot flag each
+- `--profile` is required. The Web UI profile is named `web` (`dsh web` is equivalent to `dsh --profile web`).
+- The arguments after `add` are forwarded to pnpm verbatim, so an npm package name, a `github:owner/repo[#ref]` spec, a `link:path` and a tarball URL are all accepted. A relative path (`./x`, `../x`, `link:../x`) is resolved against the working directory the command is run from, not against the profile directory.
+- Installation registers the bundle automatically: DSH appends the package to the profile's `dsh.profile.bundles` because the package declares `dsh.bundle.patch`, so no JSON editing is needed. A package without a bundle patch is reported as installed only as a plain dependency.
+- The built host artifact `lib/` is committed with the repository, so a GitHub install needs no build step and never triggers pnpm's allowBuilds prompt.
 
-**① `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`** — when the profile has a plugin version
-younger than pnpm's release-age policy, pnpm verifies the whole lockfile before any
-change, so **every plugin operation is refused** (uninstalling an unrelated plugin too).
-Let this one command through:
+### When the install fails: two cases
+
+**① `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`**
+
+When the profile contains a plugin version younger than pnpm's release-age policy, pnpm verifies the entire lockfile before any change, which rejects every plugin operation, including uninstalling an unrelated plugin. Allow it for this one command:
 
 ```powershell
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minimum-release-age=0
 ```
 
-> ⚠️ The spelling must be kebab-case. `--config.minimumReleaseAge=0` is **silently
-> ignored** by pnpm ≥12.3, so the flag looks accepted and the same error comes back.
-> And do not follow the printed advice to run `pnpm clean --lockfile`: that re-resolves
-> the whole profile and changes your other plugins with it.
+The spelling must be kebab-case: the camel-case form `--config.minimumReleaseAge=0` is silently ignored by pnpm >= 12.3, so the flag appears to be accepted while the error is unchanged. Running `pnpm clean --lockfile` as the message suggests is not recommended either: it re-resolves the whole profile and changes the other installed plugins with it.
 
-**② A slow network** — a `github:` install fetches the **whole repository**, which can pass
-pnpm's default 60-second fetch timeout. Add a second one-shot flag:
+**② A slow network**
+
+A `github:` install fetches the entire repository, which can exceed pnpm's default 60-second fetch timeout. Add a second one-shot flag:
 
 ```powershell
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minimum-release-age=0 --config.fetchTimeout=600000
 ```
 
-Restart DSH once, then open **Settings -> Plugins**: the card is in the list (labelled
-"DSH power button"), and the `⏻` button appears in the sidebar foot.
+Restart DSH once after installing, then open **Settings -> Plugins**: a card labelled "DSH power button" appears in the list, and the `⏻` button appears in the sidebar foot.
 
-> **How to tell the GitHub copy is the one installed**: the profile's `dsh.profile.bundles`
-> contains it, and `node_modules\dsh-power-switch` is a **real directory** (a local
-> `link:` install is a junction).
-> **Uninstall, or go back to a local checkout**:
-> `dsh plugin --profile web remove dsh-power-switch`, then
-> `dsh plugin --profile web add link:G:/test/c/dsh-power-switch` — both with the one-shot
-> flag above. And do **not** install the GitHub copy into a profile that already links your
-> development checkout: the package name is the same, so the second install replaces the
-> first. `dsh plugin` writes into `$DSH_HOME/profiles/web/`; if dsh runs under a sandbox,
-> run it from an ordinary terminal.
+### Verifying and uninstalling
 
-## Shutting down
+- Verify: the profile's `dsh.profile.bundles` contains this plugin, and `node_modules\dsh-power-switch` is an ordinary directory (a local `link:` install is a symbolic link or junction).
+- Uninstall: `dsh plugin --profile web remove dsh-power-switch`.
+- Return to a local checkout: uninstall first, then run `dsh plugin --profile web add link:<absolute path to this checkout>`; both steps should carry the one-shot flag above.
+- Do not install the GitHub build and a local `link:` build into the same profile: the package name is identical, so the later install replaces the earlier one.
 
-Three entries do the same thing: the sidebar `⏻`, the card's "Shut down DSH" button,
-and the plugin's own `POST /api/dsh-power-switch/shutdown` route. All of them:
+> `dsh plugin` writes into `$DSH_HOME/profiles/web/`. If dsh runs under a sandbox, run it from an ordinary terminal.
 
-1. answer the request first and only then start leaving (the page has a 10 s deadline,
-   and reports a failure when nothing answers);
-2. leave gracefully: sessions and settings flush, the plugin tree disposes;
-3. still force an exit if that disposal stalls -- a watchdog ends the process.
+## Shutdown
 
-`appExit` becomes available as the host boots. Pressing shutdown in the first moments —
-before it is registered — falls back to `SIGTERM`; that fallback was measured firing
-(`no appExit service; sending SIGTERM to self`), and the next read found the service.
-Wait a few seconds after start if a graceful exit has to be guaranteed.
+The sidebar `⏻`, the card's "Shut down DSH" button and the `POST /api/dsh-power-switch/shutdown` route behave identically:
 
-In **app-window** mode the page closes itself once the process is gone. An **ordinary
-tab** cannot: a browser refuses to let a page close a tab that YOU opened, so the card
-says to press **Ctrl+W**. That is the browser's rule, not a gap here.
+1. The response is sent before the exit begins, so the page can report that shutdown was requested; no response within 10 seconds is reported as a failure.
+2. The exit is graceful: sessions and settings are flushed, and the plugin tree is disposed.
+3. If that disposal stalls, a watchdog forces the process to end when its deadline expires.
+
+The `appExit` service becomes available progressively while the host boots. A shutdown triggered in the first moments, before that service is registered, falls back to `SIGTERM` (measured log line: `no appExit service; sending SIGTERM to self`). Where a graceful exit must be guaranteed, wait a few seconds after startup before shutting down.
+
+In app-window mode the page closes itself once the process is gone. In normal-tab mode a browser refuses to let a page close a tab the user opened, so the card states to press **Ctrl+W**. That is a browser restriction, not a gap in the plugin.
 
 ## Launch mode: app window / normal tab
 
 | | App window | Normal tab |
 |---|---|---|
-| Opened as | Chromium `--app=` (no address bar, no tab strip) | a tab in the default browser |
-| After a shutdown | **the page disappears by itself** | you press Ctrl+W |
+| Opened as | Chromium `--app=` (no address bar or tab strip) | a tab in the default browser |
+| After a shutdown | the page closes itself | press Ctrl+W |
 
-One press of the card's switch does three things: **save the setting, fix the desktop
-shortcut, restart DSH**. The setting lands in `dsh-power-switch` under
-`$DSH_HOME/settings.yaml` and in the composition entry as well, so the choice survives
-even when the host serves no settings provider.
+One press of the card's switch does three things: it saves the setting, updates the desktop shortcut, and restarts DSH. The setting is written to the `dsh-power-switch` section of `$DSH_HOME/settings.yaml` and to the composition entry as well, so the choice survives a restart even when the host serves no settings provider.
 
-**When it cannot restart safely, it refuses instead of risking an outage.** The helper
-must first prove to the host that somebody is taking over, and only then does the host
-leave; if that proof never arrives the route answers 500 and the service keeps running.
-Three refusals, each explained in the card in your own language:
+### It refuses to restart when that cannot be done safely
 
-- this DSH was not started as a `dsh web` command line (the desktop app, for example),
-  so there is no command to replay;
-- the relaunch helper could not be started;
-- the helper started but never confirmed it was up.
+The restart helper must first confirm the takeover to the host, and only then does the host exit; when that confirmation does not arrive, the route answers 500 and keeps serving. Three refusal reasons each have a dedicated line on the card:
 
-In every one of them **shutting down still works**, and the setting is already saved.
+- this DSH was not started as a `dsh web` command line (the desktop application, for example), so there is no launch command to replay;
+- the restart helper could not be started;
+- the restart helper started but never confirmed it was up.
 
-**The desktop shortcut is handled for you**: switching to the app window **adopts** the
-DSH icon you already have (or creates a `DSH 启动器` when there is none), and switching
-back to a tab **restores** your original launch method. The original target, arguments,
-icon and description are recorded in `shortcut-backup.txt` in the state directory first.
+In any of them the shutdown feature is unaffected and the setting has already been saved.
 
-### Why the shortcut matters
+### Desktop shortcut
 
-`dsh web` hands its URL to the **default browser**, so it always opens a **tab**: it has
-no app-window flag, and that hand-off runs a platform opener with a scrubbed
-environment, so no plugin can intercept it. The window shape can therefore only be
-chosen by **whatever launches dsh** -- which is this package's launcher,
-`scripts/launch-dsh.mjs` (wrapped by `launch-dsh.vbs`). It reads the stored mode, starts
-the host with the **recorded launch command** when nothing is running, waits for the
-token URL, and opens the window in that mode.
+Switching to the app window adopts the existing DSH shortcut, or creates `DSH 启动器` when none exists; switching back to a normal tab restores the original launch method. The original target, arguments, icon and description are recorded in `shortcut-backup.txt` in the state directory, so the change can be undone at any time.
 
-"Recorded" is the point: while the plugin runs, the host writes down how it was started
-(`process.execPath`, argv, cwd) into `boot.json` in the state directory, and the launcher
-replays that verbatim. The earlier version *rebuilt* it as
-`<checkout>/apps/cli/lib/bin.js`, which exists only in a DSH source checkout and
-therefore started nothing on anybody else's machine.
+Why this layer is necessary: `dsh web` hands its URL to the default browser, so it always opens a tab. It has no app-window option, and that hand-off runs a platform opener with a scrubbed environment, so no plugin can intercept it. The window shape for the next launch can therefore only be chosen by whatever launches dsh — which is this package's launcher, `scripts/launch-dsh.mjs` (wrapped by `launch-dsh.vbs`). It reads the stored mode, starts the host with the recorded launch command when no host is running, waits for the token the host prints, and opens the window in that mode.
 
-It also runs from a terminal, without any shortcut:
+"Recorded launch command" means the plugin writes its own launch facts (`process.execPath`, argv, cwd) to `boot.json` in the state directory while it runs, and the launcher replays them verbatim. The earlier implementation rebuilt `<checkout>/apps/cli/lib/bin.js`, a path that exists only in a DSH source checkout and therefore failed under every other installation.
+
+The launcher can also be run directly:
 
 ```powershell
-node scripts/launch-dsh.mjs          # whatever the setting says
-node scripts/launch-dsh.mjs --app    # force an app window for this run
-node scripts/launch-dsh.mjs --tab    # force a tab for this run
-node scripts/launch-dsh.mjs --cli D:\dsh\apps\cli\lib\bin.js   # name the CLI entry
+node scripts/launch-dsh.mjs                            # the mode from the setting
+node scripts/launch-dsh.mjs --app                      # force an app window for this run
+node scripts/launch-dsh.mjs --tab                      # force a normal tab for this run
+node scripts/launch-dsh.mjs --cli <path to the dsh CLI entry>   # name the CLI entry
 ```
 
-It never starts a duplicate: if a host is already serving it only opens the window, and
-if the port answers without a live token it **refuses** and says why instead of starting
-a second one.
+The launcher never starts a duplicate instance: when a host is already serving it only opens the window, and when the port answers but no live token can be obtained it refuses to start and reports why.
 
 ## State and logs
 
-All runtime state lives in **`$DSH_HOME/storages/dsh-power-switch/`**, never in the
-package:
+Runtime state lives in **`$DSH_HOME/storages/dsh-power-switch/`**, never inside the package:
 
-| File | What it holds |
+| File | Contents |
 |---|---|
-| `restart-dsh.log` | the shared diagnostic log of the plugin, the helper and the supervisor |
-| `boot.json` | the running host's launch command (used by the launcher and the supervisor) |
-| `token-url.txt` | **the host's own record of this run's authenticated URL** — how the helper and the launcher prove which process is serving |
-| `node-path.txt` | **the node.exe the host is running on** — read by both `.vbs` wrappers, so a Node from nvm/fnm/volta/Store can still launch DSH from a shortcut |
-| `dsh-web.<stamp>.log` | the stdout of each host this plugin started (it carries that run's token URL) |
-| `shortcut-backup.txt` | the original shortcut, so an adopted one can be put back |
-| `shortcut-result.txt` | the raw result of the last shortcut operation |
+| `restart-dsh.log` | Diagnostic log shared by the plugin, the restart helper and the supervisor |
+| `boot.json` | The most recent host launch command (used by the launcher and the supervisor) |
+| `token-url.txt` | The authenticated URL the host recorded for the current run (how the helper and the launcher identify the serving process) |
+| `node-path.txt` | The node.exe path the host is running on; both `.vbs` wrappers read it, so a Node installed through nvm/fnm/volta or an app store can still launch DSH from the shortcut |
+| `dsh-web.<stamp>.log` | The stdout of each host this plugin started, including that run's token URL |
+| `shortcut-backup.txt` | The original shortcut recorded before it was adopted, for restoring it |
+| `shortcut-result.txt` | The raw result of the most recent shortcut operation |
 
-Outside the package for two reasons: an installed package can sit in a store that
-refuses writes, and the log carries authenticated `?token=…` URLs and this machine's
-paths — inside the package those go straight into the repository.
+State is kept outside the package for two reasons: the package may sit in a read-only store, and the log contains authenticated token URLs and local paths, so a log inside the package would be a log inside the repository.
 
 ## Configuration
 
@@ -195,56 +151,38 @@ The card's configuration page, or the loader row's `config:`:
 | `exitCode` | `0` | Process exit code |
 | `hard` | `false` | Skip the graceful path and end the process at once |
 
-The card's shutdown button asks for 700 ms (so the UI reacts sooner); `delayMs` is the
-host's own default.
+The card's shutdown button requests 700 ms so the interface reacts sooner; `delayMs` is the host's own default.
 
 Environment variables:
 
-- `DSH_POWER_SWITCH_NO_WINDOW=1` -- do not open a window for *this* launch;
-- `DSH_POWER_SWITCH_WINDOW_HANDLED=1` -- somebody else is opening this launch's window
-  (the launcher and the supervisor set it; the plugin then stays quiet);
-- `DSH_POWER_SWITCH_CLI` -- the `dsh` CLI entry, for a machine that has no recorded
-  launch command yet;
-- `DSH_POWER_SWITCH_PORT` -- the port to probe (default 3080).
-- Internal, between the helper and the supervisor: `DSH_POWER_SWITCH_LAUNCH_MODE`,
-  `_DELAY`, `_HOST_LOG`, `_HANDSHAKE`. Not knobs for users.
+| Variable | Meaning |
+|---|---|
+| `DSH_POWER_SWITCH_NO_WINDOW=1` | Do not open a window for this launch |
+| `DSH_POWER_SWITCH_WINDOW_HANDLED=1` | Another process is opening this launch's window; the launcher and the supervisor set it, and the plugin then opens no second window |
+| `DSH_POWER_SWITCH_CLI` | The `dsh` CLI entry, for a machine with no recorded launch command |
+| `DSH_POWER_SWITCH_PORT` | Port to probe (default 3080) |
+| `DSH_POWER_SWITCH_LAUNCH_MODE`, `_DELAY`, `_HOST_LOG`, `_HANDSHAKE` | Internal interface between the helper and the supervisor; no configuration needed |
 
 ## Security boundary
 
-All four routes (`GET /config`, `POST /shutdown`, `POST /restart`, `POST /shortcut`)
-share one floor: **loopback only**. The peer must be `127.0.0.1`/`::1`, and any
-forwarding header (`forwarded`, `x-forwarded-for`, `x-real-ip`, `x-forwarded-host`) is
-refused.
+All four routes (`GET /config`, `POST /shutdown`, `POST /restart`, `POST /shortcut`) share one floor: loopback requests only. The peer must be `127.0.0.1`/`::1`, and any forwarding header (`forwarded`, `x-forwarded-for`, `x-real-ip`, `x-forwarded-host`) is refused.
 
-The **write** routes (`shutdown`/`restart`/`shortcut`) go one step further: `Origin` must
-equal `Host`. The **read** route `GET /config` accepts a missing `Origin` — some hosts
-issue their own requests without one — while still requiring loopback and still refusing
-forwarding headers. That difference is deliberate and documented in the code.
+The write routes (`shutdown`/`restart`/`shortcut`) additionally require `Origin` to match `Host` exactly. The read route `GET /config` accepts a missing `Origin`, because some hosts issue their own requests without it, while still requiring loopback and still refusing forwarding headers; that difference is documented in the code.
 
-`POST /shortcut` is the only route whose effect lands outside the package, so its body
-may carry exactly one **fixed action** (`scan` / `install` / `restore`) -- the directory,
-file name, target and arguments are all derived by the host from its own install
-location, and the card cannot choose any of them.
+`POST /shortcut` is the only route that produces a file outside the package, so its body accepts exactly one fixed action (`scan` / `install` / `restore`); the directory, file name, target and arguments are all derived by the host from its own installation location, and the client cannot choose any of them.
 
-The plugin reads no credentials, makes no network calls, and never touches session
-content.
+The plugin reads no credentials, makes no network requests and never touches session content.
 
 ## Development
 
 ```sh
-npm run build                            # copies src/ to lib/ (the host-half artifact)
+npm run build                            # copy src/ to lib/ (the host-half artifact)
 node scripts/run-tests.mjs               # the four suites (node:test)
-node scripts/verify-client-artifact.mjs  # serve client.js over HTTP and render both views
+node scripts/verify-client-artifact.mjs  # fetch client.js over real HTTP and render both views
 node scripts/verify-live.mjs             # health-check a running DSH
 ```
 
-`client.js` is a hand-written lazy-CJS factory artifact
-(`window.__ModuleLoader__.load`) and needs no build step. `tests/` is not published, so
-`npm test` runs from a checkout. The suites are `tests/host.test.mjs` (fence, request
-parsing, scheduler, routes, relaunch command), `tests/host-wiring.test.mjs` (plugin
-assembly and `ctx.appExit`), `tests/client.test.mjs` (card registration and interaction)
-and `tests/package.test.mjs` (artifact layout, `src`/`lib` agreement, and compiling the
-generated supervisor source).
+`client.js` is a hand-written lazy-CJS factory artifact (`window.__ModuleLoader__.load`) and needs no build step. `tests/` is not published with the npm package, so `npm test` runs from a checkout. The suites are `tests/host.test.mjs` (request fence, argument parsing, scheduler, routes, relaunch command), `tests/host-wiring.test.mjs` (plugin assembly and `ctx.appExit`), `tests/client.test.mjs` (card registration and interaction) and `tests/package.test.mjs` (artifact layout, `src`/`lib` agreement, compiling the generated supervisor source).
 
 ## License
 
