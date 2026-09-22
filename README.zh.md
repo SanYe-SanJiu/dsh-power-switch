@@ -36,6 +36,7 @@ dsh plugin --profile web add link:<本包检出的绝对路径>
 
 说明：
 
+- 文中 `dsh` 指已安装的 DSH 命令行。若 DSH 运行于源码检出中（未做全局安装），请将其替换为该检出提供的入口：检出根目录执行 `pnpm dsh`，或使用构建产物 `node apps/cli/lib/bin.js`。
 - `--profile` 为必填项；Web UI 对应的 profile 名为 `web`（`dsh web` 等价于 `dsh --profile web`）。
 - `add` 之后的参数原样转发给 pnpm，因此 npm 包名、`github:owner/repo[#ref]`、`link:路径` 与 tarball URL 均可使用。相对路径（`./x`、`../x`、`link:../x`）以执行命令时的工作目录为基准解析，而非以 profile 目录为基准。
 - 安装完成后，DSH 会自动将该包加入 profile 的 `dsh.profile.bundles`（该包声明了 `dsh.bundle.patch`），无需手工编辑 JSON。未声明 bundle patch 的包会收到"仅作为普通依赖安装"的提示。

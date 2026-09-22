@@ -38,6 +38,7 @@ dsh plugin --profile web add link:<absolute path to this checkout>
 
 Notes:
 
+- `dsh` below is the installed DSH command line. When DSH runs from a source checkout, with no global install, replace it with the entry that checkout provides: `pnpm dsh` from the repository root, or the built `node apps/cli/lib/bin.js`.
 - `--profile` is required. The Web UI profile is named `web` (`dsh web` is equivalent to `dsh --profile web`).
 - The arguments after `add` are forwarded to pnpm verbatim, so an npm package name, a `github:owner/repo[#ref]` spec, a `link:path` and a tarball URL are all accepted. A relative path (`./x`, `../x`, `link:../x`) is resolved against the working directory the command is run from, not against the profile directory.
 - Installation registers the bundle automatically: DSH appends the package to the profile's `dsh.profile.bundles` because the package declares `dsh.bundle.patch`, so no JSON editing is needed. A package without a bundle patch is reported as installed only as a plain dependency.
