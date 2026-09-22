@@ -23,23 +23,39 @@ App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), 
 
 ## Install
 
+Pick the command that matches how DSH runs, then adjust the package spec as needed:
+
 ```powershell
-# From GitHub (recommended)
+# ① the `dsh` command is installed (npm global install, or the desktop app)
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
-# Pinned to a commit: git installs are cached by pnpm, so a repeated add is not
-# guaranteed to refresh; a pinned commit is also reproducible
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
+# ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
+#    run this from the checkout root
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
-# From a local checkout (for development; link: keeps pointing at the checkout
+# ③ running from a source checkout that is not built, or you prefer the TypeScript
+#    sources — this is the form the upstream development documentation
+#    (docs/user/develop/basic/publish.md) gives for a source checkout
+#    run this from the checkout root
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+```
+
+All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`). The package spec can be swapped for:
+
+```powershell
+# pinned to a commit: git installs are cached by pnpm, so a repeated add is not
+# guaranteed to refresh, and a pinned commit is reproducible
+<entry> plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
+
+# from a local checkout (for development; link: keeps pointing at the checkout
 # instead of copying it)
-dsh plugin --profile web add link:<absolute path to this checkout>
+<entry> plugin --profile web add link:<absolute path to this checkout>
 ```
 
 Notes:
 
-- `dsh` below is the installed DSH command line. When DSH runs from a source checkout, with no global install, replace it with the entry that checkout provides: `pnpm dsh` from the repository root, or the built `node apps/cli/lib/bin.js`.
 - `--profile` is required. The Web UI profile is named `web` (`dsh web` is equivalent to `dsh --profile web`).
+- `apps/cli/lib/bin.js` is `pnpm build` output and not a file in the repository, so a fresh clone uses form ③.
 - The arguments after `add` are forwarded to pnpm verbatim, so an npm package name, a `github:owner/repo[#ref]` spec, a `link:path` and a tarball URL are all accepted. A relative path (`./x`, `../x`, `link:../x`) is resolved against the working directory the command is run from, not against the profile directory.
 - Installation registers the bundle automatically: DSH appends the package to the profile's `dsh.profile.bundles` because the package declares `dsh.bundle.patch`, so no JSON editing is needed. A package without a bundle patch is reported as installed only as a plain dependency.
 - The built host artifact `lib/` is committed with the repository, so a GitHub install needs no build step and never triggers pnpm's allowBuilds prompt.

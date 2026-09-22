@@ -23,21 +23,36 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ## 安装
 
+先按 DSH 的运行方式选一条命令，再按需替换包规格：
+
 ```powershell
-# 从 GitHub 安装（推荐）
+# ① 已安装 dsh 命令（npm 全局安装或桌面版）
 dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
+# ② 从源码检出运行，且检出已构建（存在 apps/cli/lib/bin.js）
+#    需在检出根目录执行
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+
+# ③ 从源码检出运行，未构建或希望直接跑 TypeScript 源码
+#    需在检出根目录执行；官方开发文档（docs/user/develop/basic/publish.md）
+#    对源码检出的写法就是这条
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+```
+
+三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。包规格部分可换成：
+
+```powershell
 # 指定提交：git 安装由 pnpm 缓存，重复 add 不保证刷新；指定提交也可复现
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
+<入口> plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
 
 # 从本地检出安装（用于开发；link: 保持指向检出目录，不复制）
-dsh plugin --profile web add link:<本包检出的绝对路径>
+<入口> plugin --profile web add link:<本包检出的绝对路径>
 ```
 
 说明：
 
-- 文中 `dsh` 指已安装的 DSH 命令行。若 DSH 运行于源码检出中（未做全局安装），请将其替换为该检出提供的入口：检出根目录执行 `pnpm dsh`，或使用构建产物 `node apps/cli/lib/bin.js`。
 - `--profile` 为必填项；Web UI 对应的 profile 名为 `web`（`dsh web` 等价于 `dsh --profile web`）。
+- `apps/cli/lib/bin.js` 是 `pnpm build` 的产物、不在仓库中，因此刚克隆的检出用 ③。
 - `add` 之后的参数原样转发给 pnpm，因此 npm 包名、`github:owner/repo[#ref]`、`link:路径` 与 tarball URL 均可使用。相对路径（`./x`、`../x`、`link:../x`）以执行命令时的工作目录为基准解析，而非以 profile 目录为基准。
 - 安装完成后，DSH 会自动将该包加入 profile 的 `dsh.profile.bundles`（该包声明了 `dsh.bundle.patch`），无需手工编辑 JSON。未声明 bundle patch 的包会收到"仅作为普通依赖安装"的提示。
 - 仓库中包含构建产物 `lib/`，因此从 GitHub 安装不需要构建步骤，也不会触发 pnpm 的 allowBuilds 拦截。
