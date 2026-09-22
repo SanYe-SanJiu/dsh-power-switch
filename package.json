@@ -13,6 +13,15 @@
     "windows"
   ],
   "license": "MIT",
+  "author": "SanYe-SanJiu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SanYe-SanJiu/dsh-power-switch.git"
+  },
+  "homepage": "https://github.com/SanYe-SanJiu/dsh-power-switch#readme",
+  "bugs": {
+    "url": "https://github.com/SanYe-SanJiu/dsh-power-switch/issues"
+  },
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
