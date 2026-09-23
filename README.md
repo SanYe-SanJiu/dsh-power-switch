@@ -130,6 +130,10 @@ Why this layer is necessary: `dsh web` hands its URL to the default browser, so 
 
 "Recorded launch command" means the plugin writes its own launch facts (`process.execPath`, argv, cwd) to `boot.json` in the state directory while it runs, and the launcher replays them verbatim. The earlier implementation rebuilt `<checkout>/apps/cli/lib/bin.js`, a path that exists only in a DSH source checkout and therefore failed under every other installation.
 
+Two facts a cold start cannot guess are **derived or recorded, never assumed**. The port is read back from what the host wrote about itself: the authenticated URL of its last run, then a `--port` in the recorded command line, then the documented default; and the wait for the host's readiness line accepts any loopback port, so a DSH that serves on a non-default port is started and opened rather than waited on for two minutes at a port it never used. The harness home is written into the shortcut as `--home <dir>` and handed down as `DSH_HOME` (a variable that is already set wins), so a shortcut double-clicked from Explorer reads the same state directory as the host even when the person's own shell is the only place `DSH_HOME` was ever defined.
+
+A launch that fails says so. The wrapper waits for the launcher, and a non-zero exit opens a message box with the exit code, the last lines of the log and the log path — a shortcut is double-clicked, and a wrapper that exits silently is indistinguishable from a shortcut that was never wired up.
+
 The launcher can also be run directly:
 
 ```powershell

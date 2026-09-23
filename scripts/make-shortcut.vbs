@@ -20,28 +20,37 @@
 ' Arguments:
 '   0  action       "scan" | "apply" | "create" | "restore"
 '   1  launcher     the packaged launch-dsh.vbs to point at
-'   2  backupPath   where the ORIGINAL shortcut is recorded, for restore
-'   3  resultPath   where this run writes what it did (UTF-16)
-'   4  lnkName      the shortcut name to create ("DSH" is never taken over)
-'   5  description  the shortcut's tooltip text
-'   6  targetLnk    the shortcut to adopt (required by "apply" only)
+'   2  home         the harness home to record in the shortcut (may be empty)
+'   3  backupPath   where the ORIGINAL shortcut is recorded, for restore
+'   4  resultPath   where this run writes what it did (UTF-16)
+'   5  lnkName      the shortcut name to create ("DSH" is never taken over)
+'   6  description  the shortcut's tooltip text
+'   7  targetLnk    the shortcut to adopt (required by "apply" only)
+'
+' The home is written into the shortcut as `--home <dir>`, and that is the reason
+' it is an argument at all: Explorer does not necessarily carry DSH_HOME, so a
+' shortcut that did not record the home the host was using made the launcher read
+' a different state directory, find no boot record, refuse to start anything, and
+' look to the person like a shortcut that does nothing. The value is recorded,
+' never interpreted -- this file stays mechanical.
 '
 ' Exit codes: 0 fine, 1 bad arguments, 2 launcher missing, 3 no Desktop,
 '             4 the shell refused to save, 6 nothing to restore.
 Option Explicit
 
-Dim shell, fso, action, launcher, backupPath, resultPath, lnkName, description
+Dim shell, fso, action, launcher, home, backupPath, resultPath, lnkName, description
 Dim targetLnk, desktop, ourLnk
 
-If WScript.Arguments.Count < 6 Then WScript.Quit 1
+If WScript.Arguments.Count < 7 Then WScript.Quit 1
 action = LCase(WScript.Arguments(0))
 launcher = WScript.Arguments(1)
-backupPath = WScript.Arguments(2)
-resultPath = WScript.Arguments(3)
-lnkName = WScript.Arguments(4)
-description = WScript.Arguments(5)
+home = WScript.Arguments(2)
+backupPath = WScript.Arguments(3)
+resultPath = WScript.Arguments(4)
+lnkName = WScript.Arguments(5)
+description = WScript.Arguments(6)
 targetLnk = ""
-If WScript.Arguments.Count > 6 Then targetLnk = WScript.Arguments(6)
+If WScript.Arguments.Count > 7 Then targetLnk = WScript.Arguments(7)
 
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -109,7 +118,14 @@ Function ApplyOurs(path)
   Set link = shell.CreateShortcut(path)
   link.TargetPath = shell.ExpandEnvironmentStrings("%SystemRoot%\System32\wscript.exe")
   If Not fso.FileExists(link.TargetPath) Then link.TargetPath = "wscript.exe"
-  link.Arguments = """" & launcher & """"
+  ' `--home "<dir>"` is what makes this shortcut independent of the environment
+  ' Explorer happens to carry: the wrapper resolves the state directory from it
+  ' (DSH_HOME still wins when it is set). Omitted when the host reported none.
+  If home = "" Then
+    link.Arguments = """" & launcher & """"
+  Else
+    link.Arguments = """" & launcher & """ --home """ & home & """"
+  End If
   link.WorkingDirectory = fso.GetParentFolderName(fso.GetParentFolderName(launcher))
   link.Description = description
   link.Save

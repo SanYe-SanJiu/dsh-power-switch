@@ -44,33 +44,33 @@ import {
   readBootRecord,
   readRecordedTokenUrl,
   resolveLaunchCommand,
+  resolveProbePort,
   settingsPath,
   stateDir,
   storedLaunchMode,
+  tokenUrlPattern,
 } from './restart-shared.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
- * The state directory and the one log this feature writes.
+ * An explicit port from the environment, or `null` for "derive it".
  *
- * Under the harness home, not in the package: the log carries authenticated
- * `?token=…` URLs and this machine's paths, and an installed package may live
- * somewhere that cannot be written at all.
+ * A port is NOT known here in the normal case, and pretending otherwise is what
+ * broke the cold start on another machine: this process is started by Explorer
+ * through a `.vbs`, so it inherits whatever the shortcut carries, and nothing
+ * guarantees `DSH_POWER_SWITCH_PORT`. The restart helper is handed the port by
+ * the live host; this launcher has to derive it (see `resolveProbePort`).
  */
-const STATE_DIR = (() => {
-  try {
-    return ensureStateDir()
-  } catch {
-    return stateDir()
-  }
+const envPort = (() => {
+  const value = Number(process.env.DSH_POWER_SWITCH_PORT)
+  return Number.isInteger(value) && value > 0 && value <= 65535 ? value : null
 })()
-const logFile = logPath()
 
 const options = {
   /** An explicit `dsh` CLI entry point, for a machine with no recorded command. */
   cli: process.env.DSH_POWER_SWITCH_CLI ?? null,
-  port: Number(process.env.DSH_POWER_SWITCH_PORT ?? 3080),
+  port: envPort,
   /** `null` means "whatever the card stored". */
   mode: null,
   help: false,
@@ -85,6 +85,27 @@ for (let at = 0; at < argv.length; at += 1) {
   else if (flag === '--cli') { options.cli = argv[at + 1]; at += 1 }
   else if (flag === '--help' || flag === '-h') options.help = true
 }
+
+/**
+ * The state directory and the one log this feature writes.
+ *
+ * Under the harness home, not in the package: the log carries authenticated
+ * `?token=…` URLs and this machine's paths, and an installed package may live
+ * somewhere that cannot be written at all.
+ *
+ * Parsed AFTER the command line, because the wrapper that a desktop shortcut
+ * runs resolves the harness home first and hands it down as `DSH_HOME` -- a
+ * machine that sets that variable only in a shell would otherwise leave this
+ * launcher reading an empty state directory and refusing to start anything.
+ */
+const STATE_DIR = (() => {
+  try {
+    return ensureStateDir()
+  } catch {
+    return stateDir()
+  }
+})()
+const logFile = logPath()
 
 /** Say what is happening, to the console AND to the shared log. */
 const log = (message) => {
@@ -116,8 +137,16 @@ if (options.help) {
   process.exit(0)
 }
 
-/** The pattern the host prints once it is actually serving. */
-const tokenPattern = new RegExp(`https?://127\\.0\\.0\\.1:${String(options.port)}/\\?token=[A-Za-z0-9_-]+`, 'gu')
+/**
+ * The pattern the host prints once it is actually serving.
+ *
+ * Deliberately NOT scoped to a port this process had to guess: the host is
+ * started from a recorded command line and may well serve on another port, and a
+ * scoped pattern then waits 120 s for a line that will never appear -- a
+ * shortcut that "does nothing" while the host is in fact running. Every
+ * candidate is verified against the live server before a window is opened.
+ */
+const tokenPattern = tokenUrlPattern()
 
 /**
  * Logs that could hold a RUNNING host's token, newest first.
@@ -211,11 +240,12 @@ async function liveTokenUrl() {
  * Separate from the token lookup on purpose: a host whose stdout never went to a
  * file answers here but has no discoverable token, and starting a second host
  * onto it would only produce EADDRINUSE.
+ * @param port - the port to probe, as `resolveProbePort` chose it.
  * @returns true when the port accepts a connection.
  */
-function portAnswers() {
+function portAnswers(port) {
   return new Promise((resolve) => {
-    const socket = connect({ host: '127.0.0.1', port: options.port })
+    const socket = connect({ host: '127.0.0.1', port })
     const finish = (value) => { socket.destroy(); resolve(value) }
     socket.setTimeout(700)
     socket.once('connect', () => { finish(true) })
@@ -233,14 +263,17 @@ function portAnswers() {
  * the window the person is waiting for.
  * @param hostLog - the file the new host writes its stdout to.
  * @param timeoutMs - how long to wait.
+ * @param from - byte offset to read from; everything before it belongs to an
+ *   earlier run (the log is opened for APPEND, never truncated).
  * @returns the authenticated URL, or null on timeout.
  */
-async function waitForToken(hostLog, timeoutMs) {
+async function waitForToken(hostLog, timeoutMs, from = 0) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await new Promise((resolve) => { setTimeout(resolve, 400) })
     try {
-      const found = [...readFileSync(hostLog, 'utf8').matchAll(tokenPattern)].pop()
+      const text = readFileSync(hostLog).subarray(from).toString('utf8')
+      const found = [...text.matchAll(tokenPattern)].pop()
       if (found !== undefined) return found[0]
     } catch {
       // The host has not written anything yet.
@@ -259,6 +292,8 @@ async function waitForToken(hostLog, timeoutMs) {
  */
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 400) })
 
+log(`harness state: ${STATE_DIR}`)
+
 const stored = storedLaunchMode(settingsPath())
 const mode = options.mode ?? stored ?? 'tab'
 log(`window mode: using "${mode}" (stored: ${String(stored)}, forced: ${String(options.mode)})`)
@@ -267,14 +302,24 @@ log(`window mode: using "${mode}" (stored: ${String(stored)}, forced: ${String(o
 // on the port, and restarting is a different intent -- that is the card's switch.
 const existing = await liveTokenUrl()
 if (existing !== null) {
-  log(`a host is already serving on port ${String(options.port)}; opening the window only`)
+  log(`a host is already serving; opening the window only`)
   openWindow(existing, mode, log)
   await settle()
   process.exit(0)
 }
 
-if (await portAnswers()) {
-  log(`FAILED: port ${String(options.port)} answers but no live token URL was found in any log,`)
+// The port to probe is DERIVED, never assumed: a machine whose DSH serves on
+// something other than the default used to be probed on the wrong port, so a
+// running host could be missed and a second one started onto it.
+const probe = resolveProbePort({
+  explicit: options.port,
+  recordedUrl: readRecordedTokenUrl(),
+  bootArgs: readBootRecord()?.args ?? [],
+})
+log(`probing port ${String(probe.port)} (${probe.source})`)
+
+if (await portAnswers(probe.port)) {
+  log(`FAILED: port ${String(probe.port)} answers but no live token URL was found in any log,`)
   log('FAILED: so a host is running whose output is not a file. Not starting a second one.')
   process.exit(1)
 }
@@ -293,6 +338,12 @@ try {
   log(`FAILED: cannot open the host log ${hostLog}: ${error.message}`)
   process.exit(1)
 }
+// Everything already in the file belongs to an earlier run: the wait below must
+// only ever see what THIS host appends.
+let from = 0
+try {
+  from = statSync(hostLog).size
+} catch { /* a fresh file has no size to read */ }
 log(`starting (${command.source}): ${command.execPath} ${command.args.join(' ')}`)
 // A shell shim needs a single quoted command line: `shell: true` alone joins the
 // arguments with spaces and breaks on any path that contains one.
@@ -317,7 +368,7 @@ child.unref()
 try { closeSync(out) } catch { /* the child owns the handle now */ }
 log(`started pid ${String(child.pid)}; it writes its output to ${hostLog}`)
 
-const url = await waitForToken(hostLog, 120_000)
+const url = await waitForToken(hostLog, 120_000, from)
 if (url === null) {
   log('FAILED: no token URL within 120 s; the host never became ready. Its last lines:')
   try {

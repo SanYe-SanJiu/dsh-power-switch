@@ -655,6 +655,11 @@ describe('classifyShortcut', () => {
   it('recognises a shortcut that already points at our launcher', () => {
     const ours = entry({ target: 'C:\\Windows\\System32\\wscript.exe', args: `"${LAUNCHER}"` })
     assert.equal(classifyShortcut(ours, LAUNCHER), 'ours')
+    // The installed form carries the harness home as a second argument; it is
+    // still ours, and it must be recognised as ours or the card would offer to
+    // adopt an icon this plugin already wrote.
+    const withHome = entry({ target: 'C:\\Windows\\System32\\wscript.exe', args: `"${LAUNCHER}" --home "C:\\Users\\a\\.dsh"` })
+    assert.equal(classifyShortcut(withHome, LAUNCHER), 'ours')
   })
 
   it('recognises the CLI itself and node wrappers', () => {

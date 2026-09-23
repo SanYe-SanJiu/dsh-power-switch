@@ -176,6 +176,53 @@ describe('generated relaunch supervisor', () => {
     assert.match(launcher, /answers but no live token URL was found/)
   })
 
+  /**
+   * A cold start must never ASSUME the port it will serve on.
+   *
+   * Measured failure this replaces: the launcher scoped both its probe and its
+   * wait for the host's token line to `DSH_POWER_SWITCH_PORT ?? 3080`. The
+   * restart helper is handed the live host's port (`restartHelperEnv`), but the
+   * launcher is started by Explorer and inherits no such fact -- so on a machine
+   * whose DSH serves on another port, switching to app mode worked while the
+   * desktop shortcut started the host and then waited 120 s for a line that
+   * could never appear, i.e. a shortcut that "does nothing".
+   */
+  it('reads the port back from what the host recorded, and waits on ANY port', async () => {
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    // Unscoped accepts every loopback port; scoped still honours an instruction.
+    assert.equal(shared.tokenUrlPattern().test('http://127.0.0.1:4000/?token=aa_BB-1'), true)
+    assert.equal(shared.tokenUrlPattern(4000).test('http://127.0.0.1:4000/?token=aa_BB-1'), true)
+    assert.equal(shared.tokenUrlPattern(3080).test('http://127.0.0.1:4000/?token=aa_BB-1'), false)
+    // The port of the host's own record, and of the recorded command line.
+    assert.equal(shared.portFromTokenUrl('http://127.0.0.1:4173/?token=x'), 4173)
+    assert.equal(shared.portFromTokenUrl('http://127.0.0.1/?token=x'), null)
+    assert.equal(shared.portFromTokenUrl('https://example.com:9/?token=x'), null)
+    assert.equal(shared.portFromArguments(['web', '--port', '4100']), 4100)
+    assert.equal(shared.portFromArguments(['web', '--port=4200']), 4200)
+    assert.equal(shared.portFromArguments(['web', '-p', '4300']), 4300)
+    assert.equal(shared.portFromArguments(['web']), null)
+    // Precedence: an explicit instruction, then the port the last host served on,
+    // then the port the replayed command line asks for, then the default.
+    assert.equal(
+      shared.resolveProbePort({ explicit: 3000, recordedUrl: 'http://127.0.0.1:4173/?token=x', bootArgs: ['web', '--port', '4100'] }).port,
+      3000,
+    )
+    assert.equal(shared.resolveProbePort({ recordedUrl: 'http://127.0.0.1:4173/?token=x' }).port, 4173)
+    assert.equal(shared.resolveProbePort({ bootArgs: ['web', '--port', '4100'] }).port, 4100)
+    assert.equal(shared.resolveProbePort({}).port, 3080)
+  })
+
+  it('derives that port in the launcher instead of defaulting to 3080 there', async () => {
+    const launcher = await readFile(at('scripts/launch-dsh.mjs'), 'utf8')
+    assert.match(launcher, /tokenUrlPattern\(\)/)
+    assert.match(launcher, /resolveProbePort\(/)
+    // A literal port in this file IS the bug: nothing hands this process a port.
+    assert.doesNotMatch(launcher, /3080/)
+    // And the wait only ever reads what THIS run appended to the host log.
+    assert.match(launcher, /waitForToken\(hostLog, 120_000, from\)/)
+    assert.match(launcher, /from = statSync\(hostLog\)\.size/)
+  })
+
   it('marks the host that a deliberate opener started, so no second window appears', async () => {
     // Three processes open this boot's window on purpose. Each must tell the host
     // half that the job is taken: without the marker the plugin opens ANOTHER
@@ -306,7 +353,7 @@ describe('desktop shortcut placement', () => {
     // ANSI and land on the desktop as mojibake.
     // eslint-disable-next-line no-control-regex -- ASCII-ness is exactly the claim
     assert.doesNotMatch(helper, /[^\u0000-\u007F]/u, 'make-shortcut.vbs must stay ASCII-only')
-    assert.match(helper, /WScript\.Arguments\.Count < 6/)
+    assert.match(helper, /WScript\.Arguments\.Count < 7/)
     // A redirected Desktop is common, and a shortcut in the wrong folder is
     // invisible -- so the shell must be the one asked.
     assert.match(helper, /SpecialFolders\("Desktop"\)/)
@@ -354,7 +401,10 @@ describe('desktop shortcut placement', () => {
 
   it('receives the arguments in the order the helper reads them', async () => {
     const host = await readFile(at('src/index.js'), 'utf8')
-    assert.match(host, /'\/\/nologo', helper, action, launcher, SHORTCUT_BACKUP, SHORTCUT_RESULT, SHORTCUT_NAME, SHORTCUT_DESCRIPTION/)
+    assert.match(host, /'\/\/nologo', helper, action, launcher, dshHome\(\), SHORTCUT_BACKUP, SHORTCUT_RESULT, SHORTCUT_NAME, SHORTCUT_DESCRIPTION/)
+    // The harness home is one of them, because a shortcut that does not carry it
+    // is at the mercy of whatever environment Explorer happens to hold.
+    assert.match(host, /\bdshHome\b/)
     // The shortcut to adopt rides as an extra argument, because the helper decides
     // nothing by itself.
     assert.match(host, /if \(targetLnk !== undefined\) args\.push\(targetLnk\)/)
@@ -367,19 +417,22 @@ describe('desktop shortcut placement', () => {
     assert.match(host, /readFileSync\(SHORTCUT_BACKUP, 'utf16le'\)/)
   })
 
-  it('wraps the cmd /c command, so cmd cannot strip the quoted program path', async () => {
+  it('wraps the cmd /c command, and waits so the exit code can be reported', async () => {
     // Measured: `shell.Run "cmd /c " & cmd` never ran anything at all. cmd /c
     // strips the first and last quote character of a command line holding more than
     // two quotes, so "C:\Program Files\nodejs\node.exe" was broken in half and the
     // error went into the mangled redirect target -- a shortcut that silently did
     // nothing. One extra pair of quotes is the fix, and it is also why the
     // manual-restart wrapper had never actually worked.
+    //
+    // The last argument is True (WAIT): a double-click has no console, so a
+    // non-zero exit is only reportable at all if the wrapper can see it.
     for (const file of ['scripts/launch-dsh.vbs', 'scripts/restart-dsh-web.vbs']) {
-      assert.match(
-        await readFile(at(file), 'utf8'),
-        /shell\.Run "cmd \/c """ & cmd & """", 0, False/,
-        `${file} must quote the whole command`,
-      )
+      const vbs = await readFile(at(file), 'utf8')
+      assert.match(vbs, /shell\.Run\("cmd \/c """ & cmd & """", 0, True\)/, `${file} must quote the whole command`)
+      assert.match(vbs, /If exitCode <> 0 Then/, `${file} must report a failed launch instead of exiting silently`)
+      assert.match(vbs, /MsgBox/, `${file} must show the failure it cannot print`)
+      assert.doesNotMatch(vbs, /, 0, False/, `${file} must not return before the exit code is known`)
     }
   })
 
@@ -394,6 +447,22 @@ describe('desktop shortcut placement', () => {
     const vbs = await readFile(at('scripts/launch-dsh.vbs'), 'utf8')
     assert.match(vbs, /& script & """ >> """ & logFile &/)
     assert.doesNotMatch(vbs, /& script & " >> """/)
+  })
+
+  it('records the harness home in the shortcut, so Explorer needs no DSH_HOME', async () => {
+    const helper = await readFile(at('scripts/make-shortcut.vbs'), 'utf8')
+    // The home is argument 2 and is written into the .lnk as `--home "<dir>"`.
+    assert.match(helper, /home = WScript\.Arguments\(2\)/)
+    assert.match(helper, /--home """/)
+    const launcher = await readFile(at('scripts/launch-dsh.vbs'), 'utf8')
+    // The wrapper resolves it (DSH_HOME first, then the recorded value) and hands
+    // it to the launcher and the host as DSH_HOME, so all three agree on the state
+    // directory. Without this, a machine whose DSH_HOME lives only in a shell left
+    // the shortcut reading an empty state directory: no boot record, no refusal
+    // message, nothing on screen.
+    assert.match(launcher, /--home/)
+    assert.match(launcher, /shell\.Environment\("Process"\)\("DSH_HOME"\) = homeDir/)
+    assert.match(launcher, /If envHome = "" And bakedHome <> "" Then/)
   })
 
   it('never lets the card choose a target, a path or a name', async () => {

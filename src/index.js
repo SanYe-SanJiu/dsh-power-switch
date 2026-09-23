@@ -17,6 +17,7 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
+  dshHome,
   ensureStateDir,
   logPath,
   openWindow,
@@ -395,7 +396,11 @@ function callShortcutHelper(action, targetLnk) {
   } catch {
     // A result file that cannot be removed only costs us a fresh answer.
   }
-  const args = ['//nologo', helper, action, launcher, SHORTCUT_BACKUP, SHORTCUT_RESULT, SHORTCUT_NAME, SHORTCUT_DESCRIPTION]
+  // The harness home rides along so the shortcut can record it: Explorer does not
+  // necessarily carry DSH_HOME, and a launcher started from a shortcut without it
+  // reads a different state directory, finds no boot record and refuses to start
+  // anything -- a shortcut that looks like it does nothing.
+  const args = ['//nologo', helper, action, launcher, dshHome(), SHORTCUT_BACKUP, SHORTCUT_RESULT, SHORTCUT_NAME, SHORTCUT_DESCRIPTION]
   if (targetLnk !== undefined) args.push(targetLnk)
   const outcome = spawnSync('cscript.exe', args, { stdio: 'ignore', windowsHide: true })
   return { outcome, reported: readShortcutResult() }

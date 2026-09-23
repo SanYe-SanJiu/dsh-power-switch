@@ -111,6 +111,97 @@ export function writeRecordedTokenUrl(url) {
   return file
 }
 
+/** Whether a value is a usable TCP port number. */
+function isPort(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 65535
+}
+
+/**
+ * A token-URL pattern, optionally scoped to ONE port.
+ *
+ * The UNSCOPED form is the one a cold start needs, and that is a measured
+ * failure rather than a preference: the host hands its own port to the restart
+ * helper (`restartHelperEnv`), but the desktop launcher is started by Explorer
+ * and inherits no such fact. Scoping that wait to a guessed 3080 meant a DSH on
+ * any other port was started correctly and then never got a window -- the
+ * launcher waited for a line the host would never print on that port, and the
+ * person saw a shortcut that "does nothing".
+ *
+ * Matching ANY loopback port is safe because every candidate is verified against
+ * the live server before it is opened: a token from a stale or foreign run
+ * answers nothing and is rejected by the probe.
+ * @param port - the port to scope the pattern to, or `null` for any port.
+ * @returns a FRESH global regex (a shared `/g` regex carries `lastIndex` state).
+ */
+export function tokenUrlPattern(port = null) {
+  const scope = isPort(port) ? `:${String(port)}` : ':\\d{1,5}'
+  return new RegExp(`https?://127\\.0\\.0\\.1${scope}/\\?token=[A-Za-z0-9_-]+`, 'gu')
+}
+
+/**
+ * The port inside a loopback token URL, or null.
+ * @param url - a candidate token URL.
+ * @returns the port, or null when the URL is not one.
+ */
+export function portFromTokenUrl(url) {
+  if (typeof url !== 'string') return null
+  const match = /^https?:\/\/127\.0\.0\.1:(\d{1,5})\/\?token=/u.exec(url.trim())
+  if (match === null) return null
+  const port = Number(match[1])
+  return isPort(port) ? port : null
+}
+
+/**
+ * The port a recorded argument list asks for, or null.
+ *
+ * A host started as `dsh web --port 4000` records exactly that, and the launcher
+ * replays it verbatim -- so the port it will serve on is readable from the record
+ * before anything is spawned. `--port=N` and the short `-p N` are accepted
+ * because the CLI accepts them.
+ * @param args - the recorded argument list.
+ * @returns the port, or null when the arguments name none.
+ */
+export function portFromArguments(args) {
+  const list = Array.isArray(args) ? args.map((value) => String(value)) : []
+  for (let at = 0; at < list.length; at += 1) {
+    const inline = /^--port=(\d{1,5})$/u.exec(list[at])
+    if (inline !== null) {
+      const port = Number(inline[1])
+      return isPort(port) ? port : null
+    }
+    if (list[at] === '--port' || list[at] === '-p') {
+      const port = Number(list[at + 1])
+      return isPort(port) ? port : null
+    }
+  }
+  return null
+}
+
+/**
+ * Which port a cold start should probe, and where that answer came from.
+ *
+ * The order is "most authoritative statement first": an explicit `--port` or
+ * `DSH_POWER_SWITCH_PORT` is a deliberate instruction; the port the last host
+ * recorded for itself is what this machine actually served on; the port inside
+ * the recorded launch command is what the replayed host WILL serve on; and only
+ * then the historical default.
+ *
+ * The probe is a safety check -- "refuse rather than start a second host onto an
+ * occupied port" -- so a wrong guess costs the refusal, not the launch: the wait
+ * for the token URL is port-agnostic for exactly that reason.
+ * @param options - `{ explicit, recordedUrl, bootArgs, fallback }`.
+ * @returns `{ port, source }`.
+ */
+export function resolveProbePort(options = {}) {
+  const { explicit = null, recordedUrl = null, bootArgs = [], fallback = 3080 } = options
+  if (isPort(explicit)) return { port: explicit, source: 'the --port / DSH_POWER_SWITCH_PORT setting' }
+  const fromUrl = portFromTokenUrl(recordedUrl)
+  if (fromUrl !== null) return { port: fromUrl, source: 'the port the last host recorded for itself' }
+  const fromArgs = portFromArguments(bootArgs)
+  if (fromArgs !== null) return { port: fromArgs, source: 'the port in the recorded launch command' }
+  return { port: fallback, source: 'the default port' }
+}
+
 /**
  * Where the host records the Node interpreter it is running on.
  *

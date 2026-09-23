@@ -24,7 +24,7 @@ import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ensureStateDir, logPath, openWindow, readBootRecord, readRecordedTokenUrl, resolveLaunchCommand, stateDir } from './restart-shared.mjs'
+import { ensureStateDir, logPath, openWindow, readBootRecord, readRecordedTokenUrl, resolveLaunchCommand, resolveProbePort, stateDir, tokenUrlPattern } from './restart-shared.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -41,7 +41,8 @@ const STATE_DIR = (() => {
 const options = {
   /** An explicit `dsh` CLI entry, for a machine with no recorded command. */
   cli: process.env.DSH_POWER_SWITCH_CLI ?? '',
-  port: 3080,
+  /** `null` means "derive it": see `resolveProbePort` below. */
+  port: null,
   delaySeconds: 3,
   bundleId: 'dsh-power-switch',
   // The same log the plugin's `note()` and the supervisor write, outside the package.
@@ -63,6 +64,24 @@ for (let index = 2; index < process.argv.length; index += 1) {
   else if (flag === '--app') { options.open = true; options.app = true }
   else if (flag === '--open') options.open = true
 }
+
+/**
+ * The port to work on.
+ *
+ * DERIVED when nothing named one, and that is a fix rather than a nicety: this
+ * script is started by a `.vbs` a person double-clicks, so no environment hands
+ * it the port the host is serving on. With a hardcoded 3080 the running host was
+ * never found on any other port -- the stop step reported "nothing is
+ * listening", and the script then started a SECOND host that died on
+ * EADDRINUSE. The host's own record answers this, exactly as it does for the
+ * desktop launcher; `--port` still overrides everything.
+ */
+const probe = resolveProbePort({
+  explicit: options.port,
+  recordedUrl: readRecordedTokenUrl(),
+  bootArgs: readBootRecord()?.args ?? [],
+})
+options.port = probe.port
 
 /**
  * Append one line to the log the person will read afterwards.
@@ -177,7 +196,9 @@ function tokenUrlFromLog() {
     if (!existsSync(candidate)) continue
     let text
     try { text = readFileSync(candidate, 'utf8') } catch { continue }
-    const found = [...text.matchAll(new RegExp(`https?://127\\.0\\.0\\.1:${String(options.port)}/\\?token=[A-Za-z0-9_-]+`, 'gu'))].pop()
+    // Any loopback port, not the one this script guessed: the URL that comes back
+    // is the host's own, and it is verified before it is used.
+    const found = [...text.matchAll(tokenUrlPattern())].pop()
     if (found !== undefined) return found[0]
   }
   return null
