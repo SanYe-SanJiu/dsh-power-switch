@@ -20,6 +20,7 @@ App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), 
 | Operating system | Windows 10 or later |
 | DSH | `>=0.1.0-rc.6` (see `engines.dsh` in `package.json`) |
 | Node.js | `>=20` |
+| Windows Script Host | Required by the desktop-shortcut layer (`cscript.exe` / `wscript.exe`). It can be removed, or blocked by antivirus, Attack Surface Reduction rules or group policy — a locked-down machine is a real case, not a hypothetical one. When that happens the card says so in its own words, and the shutdown feature, the settings section and the mode switch are unaffected. |
 
 ## Install
 
@@ -193,6 +194,11 @@ The write routes (`shutdown`/`restart`/`shortcut`) additionally require `Origin`
 `POST /shortcut` is the only route that produces a file outside the package, so its body accepts exactly one fixed action (`scan` / `install` / `restore`); the directory, file name, target and arguments are all derived by the host from its own installation location, and the client cannot choose any of them.
 
 The plugin reads no credentials, makes no network requests and never touches session content.
+
+Two boundaries are worth stating plainly rather than leaving to be discovered:
+
+- **`boot.json` is a trust boundary.** The restart replays the command line the running host recorded for itself, verbatim — that is the whole design, and it is why no installation path is ever reconstructed. Anyone who can write the state directory can therefore have that command executed with your privileges. That is not a privilege escalation (the same is true of `settings.yaml`, the profile's plugin list, and every other file the harness reads), and it is exactly why the state directory lives inside your user profile and never inside the package. Treat write access to `$DSH_HOME` as equivalent to running code as yourself.
+- **The authenticated `?token=…` URL is a local access credential.** It is written in exactly two places, both under `$DSH_HOME/storages/dsh-power-switch/`: the host's own stdout log (`dsh-web.<stamp>.log`), which is how a replacement host is identified, and `token-url.txt`. Every diagnostic line that would repeat it is redacted to `?token=***` — including the wrapper log in `%TEMP%`, which a desktop shortcut writes. Do not paste those two files anywhere public.
 
 ## Development
 

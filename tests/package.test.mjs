@@ -144,11 +144,12 @@ describe('generated relaunch supervisor', () => {
 
   it('imports the window-mode helpers instead of assuming they are in scope', async () => {
     const generated = await build()
-    assert.match(generated, /const \{ storedLaunchMode, openWindow \} = await import\(/)
+    assert.match(generated, /const \{ storedLaunchMode, openWindow, redactToken \} = await import\(/)
     const shared = await import(url('scripts/restart-shared.mjs'))
     assert.equal(typeof shared.storedLaunchMode, 'function')
     assert.equal(typeof shared.findBrowser, 'function')
     assert.equal(typeof shared.openWindow, 'function')
+    assert.equal(typeof shared.redactToken, 'function')
   })
 
   it('does not re-implement the window decision it shares with the other entry points', async () => {
@@ -234,6 +235,24 @@ describe('generated relaunch supervisor', () => {
     // It also states which port it used: otherwise "wrong port" and "no host
     // running" are the same refusal in the log.
     assert.match(helper, /log\(`port \$\{String\(port\)\} \(\$\{probe\.source\}\)`\)/)
+  })
+
+  it('never writes the token into a log a person may share', async () => {
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    assert.equal(shared.redactToken('http://127.0.0.1:3080/?token=abc_DEF-123'), 'http://127.0.0.1:3080/?token=***')
+    assert.equal(shared.redactToken('a http://127.0.0.1:9/?x=1&token=zzz b'), 'a http://127.0.0.1:9/?x=1&token=*** b')
+    // Text without a token is returned untouched, so a diagnostic stays readable.
+    assert.equal(shared.redactToken('no url here'), 'no url here')
+    // Every entry point that logs a URL, or dumps the host log tail that contains
+    // one, goes through it. The launcher matters most: a shortcut runs it through
+    // a wrapper that redirects stdout into %TEMP%, so one raw line put the token
+    // in a second place nobody thinks of as a secret store.
+    for (const file of ['scripts/launch-dsh.mjs', 'scripts/restart-dsh-web.mjs', 'scripts/restart-from-inside.mjs']) {
+      const text = await readFile(at(file), 'utf8')
+      assert.match(text, /redactToken/, `${file} must redact token URLs in its diagnostics`)
+      assert.doesNotMatch(text, /log\(`dsh web: \$\{url\}`\)/, `${file} must not log a raw token URL`)
+      assert.doesNotMatch(text, /log\('dsh web: ' \+ url\)/, `${file} must not log a raw token URL`)
+    }
   })
 
   it('marks the host that a deliberate opener started, so no second window appears', async () => {

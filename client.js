@@ -108,6 +108,7 @@ window.__ModuleLoader__.load({
         launchRefusedHelper: '重启助手没能启动，所以这次不会重启——服务保持可用。',
         launchRefusedUnconfirmed: '重启助手启动了但没有确认就位，所以这次不会重启——服务保持可用。',
         launchReadRetry: '读取宿主设置失败，正在重试…',
+        shortcutRefusedWsh: '系统缺少或被安全策略拦截了 Windows 脚本宿主（cscript.exe），这次没能改动桌面快捷方式。关闭进程与模式切换本身不受影响；请让管理员放行 .vbs 脚本，或手动把快捷方式指向 scripts\\launch-dsh.vbs。',
         launchUnknown: '未知',
         shortcutAdopted: '已接管桌面快捷方式：',
         shortcutCreated: '已新建桌面快捷方式：',
@@ -161,6 +162,7 @@ window.__ModuleLoader__.load({
         launchRefusedHelper: 'the relaunch helper could not be started, so nothing was restarted \u2014 the service stays available.',
         launchRefusedUnconfirmed: 'the relaunch helper started but never confirmed it was up, so nothing was restarted \u2014 the service stays available.',
         launchReadRetry: 'Could not read the host settings; retrying\u2026',
+        shortcutRefusedWsh: 'Windows Script Host (cscript.exe) is missing, or blocked by security policy, so the desktop shortcut was not changed. Shutting down and the mode switch itself are unaffected; allow .vbs scripts, or point the shortcut at scripts\\launch-dsh.vbs yourself.',
         launchUnknown: 'unknown',
         shortcutAdopted: 'Desktop shortcut adopted: ',
         shortcutCreated: 'Desktop shortcut created: ',
@@ -625,6 +627,22 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * Localized copy for a SHORTCUT refusal the host named.
+       *
+       * Same rule as `refusalCopy`, for the same reason: the host refuses, says
+       * why with a stable code, and the person reading a Chinese page should not
+       * get the host's English diagnostic. Windows Script Host being missing or
+       * blocked is the interesting case -- it is a machine policy, not a bug in
+       * the plugin, and the copy has to say what can actually be done.
+       * @param reason - `payload.reason` from a refused shortcut operation.
+       * @returns the copy to show, or null to fall back to the raw message.
+       */
+      const shortcutRefusalCopy = (reason) => {
+        if (reason === 'wsh-missing' || reason === 'wsh-blocked' || reason === 'wsh-failed') return t('shortcutRefusedWsh')
+        return null
+      }
+
+      /**
        * Read the launch mode the host will use for the NEXT launch.
        *
        * The card cannot read that itself: the settings document is the host's.
@@ -697,7 +715,8 @@ window.__ModuleLoader__.load({
             setShortcutLines(shortcutReport(applied))
           } catch (error) {
             const aborted = error?.name === 'AbortError'
-            setShortcutLines([`${t('shortcutFailed')}${aborted ? t('launchNoAnswer') : String(error?.message ?? error)}`])
+            const named = shortcutRefusalCopy(error?.reason)
+            setShortcutLines([named ?? `${t('shortcutFailed')}${aborted ? t('launchNoAnswer') : String(error?.message ?? error)}`])
           }
           const response = await fetch(absoluteUrl(RESTART_ROUTE), {
             method: 'POST',
@@ -759,7 +778,11 @@ window.__ModuleLoader__.load({
         })
         const payload = await response.json().catch(() => null)
         if (!response.ok || payload?.ok !== true) {
-          throw new Error(String(payload?.error ?? `HTTP ${String(response.status)}`))
+          const error = new Error(String(payload?.error ?? `HTTP ${String(response.status)}`))
+          // The host names its refusals with a stable code; carrying it lets the
+          // card answer in the reader's language instead of pasting English.
+          if (typeof payload?.reason === 'string') error.reason = payload.reason
+          throw error
         }
         return payload
       }

@@ -43,6 +43,7 @@ import {
   openWindow,
   readBootRecord,
   readRecordedTokenUrl,
+  redactToken,
   resolveLaunchCommand,
   resolveProbePort,
   settingsPath,
@@ -372,13 +373,17 @@ const url = await waitForToken(hostLog, 120_000, from)
 if (url === null) {
   log('FAILED: no token URL within 120 s; the host never became ready. Its last lines:')
   try {
+    // Redacted: this log is ALSO written to %TEMP% by the wrapper a shortcut
+    // runs, and the host's last lines include its own token URL.
     for (const line of readFileSync(hostLog, 'utf8').split(/\r?\n/u).slice(-20)) {
-      if (line !== '') log(`  ${line}`)
+      if (line !== '') log(`  ${redactToken(line)}`)
     }
   } catch { /* nothing to show */ }
   process.exit(1)
 }
-log(`dsh web: ${url}`)
+// Redacted for the same reason: the URL is a local access credential, and this
+// line reaches %TEMP% through the wrapper's redirect.
+log(`dsh web: ${redactToken(url)}`)
 
 openWindow(url, mode, log)
 log('launch complete')

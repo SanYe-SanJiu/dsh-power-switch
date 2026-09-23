@@ -30,6 +30,7 @@ import {
   relaunchPlan,
   restartHelperEnv,
   schemasteryReferrers,
+  shortcutVerdict,
   shouldOpenStartupWindow,
   resolveConfig,
 } from '../src/host.js'
@@ -729,6 +730,52 @@ describe('chooseShortcutAction', () => {
   it('survives an empty or malformed scan', () => {
     assert.equal(chooseShortcutAction([], LAUNCHER).action, 'create')
     assert.equal(chooseShortcutAction(undefined, LAUNCHER).action, 'create')
+  })
+})
+
+/**
+ * The mapping from a helper run to what the card is told.
+ *
+ * Windows Script Host can be ABSENT (nothing to fix on this machine) or BLOCKED
+ * (a policy the person or their administrator can allow) -- an Attack Surface
+ * Reduction rule or a script-host lockdown hits the second. Both used to arrive as
+ * `cscript could not be run: <raw node error>`, which names neither.
+ */
+describe('shortcutVerdict', () => {
+  const quiet = () => {}
+  const ran = (over = {}) => ({ entries: [], candidates: [], others: 0, ran: true, ...over })
+  const failed = (code) => Object.assign(new Error(`spawn cscript.exe ${code}`), { code })
+
+  it('passes a clean run', () => {
+    assert.equal(shortcutVerdict('install', { status: 0 }, ran(), quiet), null)
+  })
+
+  it('names a script host that is missing', () => {
+    const verdict = shortcutVerdict('install', { error: failed('ENOENT') }, ran({ ran: false }), quiet)
+    assert.equal(verdict.ok, false)
+    assert.equal(verdict.reason, 'wsh-missing')
+    assert.match(verdict.error, /cscript could not be run/)
+  })
+
+  it('names a script host that policy refuses to start', () => {
+    assert.equal(shortcutVerdict('install', { error: failed('EPERM') }, ran({ ran: false }), quiet).reason, 'wsh-blocked')
+    assert.equal(shortcutVerdict('install', { error: failed('EACCES') }, ran({ ran: false }), quiet).reason, 'wsh-blocked')
+  })
+
+  it('treats a non-zero exit with NO result file as a script that never ran', () => {
+    // The helper opens its result file before doing anything else, so silence
+    // means policy or a parse failure -- not one of the refusals it reports itself.
+    const verdict = shortcutVerdict('install', { status: 1 }, ran({ ran: false }), quiet)
+    assert.equal(verdict.reason, 'wsh-blocked')
+    assert.equal(verdict.code, 1)
+    assert.match(verdict.error, /did not run/)
+  })
+
+  it('still reports what the helper said when it ran and refused', () => {
+    const verdict = shortcutVerdict('apply', { status: 4 }, ran({ error: 'the shell refused to save the shortcut' }), quiet)
+    assert.equal(verdict.reason, undefined)
+    assert.equal(verdict.error, 'the shell refused to save the shortcut')
+    assert.equal(verdict.code, 4)
   })
 })
 

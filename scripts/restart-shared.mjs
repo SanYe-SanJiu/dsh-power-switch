@@ -203,6 +203,25 @@ export function resolveProbePort(options = {}) {
 }
 
 /**
+ * A URL with its token replaced, for anything a person will read.
+ *
+ * The authenticated URL is a local access credential: whoever holds it can talk
+ * to this DSH. The files that MUST hold it are the only two that should -- the
+ * host's own stdout log (how a replacement finds the live process) and
+ * `token-url.txt` -- so every diagnostic line goes through here first.
+ *
+ * The launcher is why this exists: a desktop shortcut runs it through a `.vbs`
+ * that redirects stdout into `%TEMP%`, so one raw URL in a log line put the token
+ * in a second, less obvious place. Diagnostics keep their shape -- the port and
+ * the path stay readable -- without the secret.
+ * @param value - any text that may contain a token URL.
+ * @returns the same text with every token replaced by `***`.
+ */
+export function redactToken(value) {
+  return String(value).replace(/([?&]token=)[A-Za-z0-9_-]+/gu, '$1***')
+}
+
+/**
  * Where the host records the Node interpreter it is running on.
  *
  * Read by `launch-dsh.vbs`, which cannot parse JSON and must not guess:

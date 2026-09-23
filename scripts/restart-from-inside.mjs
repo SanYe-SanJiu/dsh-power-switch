@@ -380,7 +380,7 @@ process.on('unhandledRejection', (error) => { reportCrash('unhandled rejection',
  * host refuses to exit and keeps the service up -- instead of going down with
  * nobody left to bring it back.
  */
-const { storedLaunchMode, openWindow } = await import(${JSON.stringify(sharedUrl)})
+const { storedLaunchMode, openWindow, redactToken } = await import(${JSON.stringify(sharedUrl)})
 const settingsFile = ${JSON.stringify(settingsFile)}
 
 /**
@@ -568,11 +568,13 @@ while (Date.now() < deadline && url === null) {
 if (url === null) {
   log('FAILED: no token URL within 120 s')
   try {
-    for (const line of readFileSync(hostLog, 'utf8').split(/\\r?\\n/).slice(-20)) log('  ' + line)
+    // Redacted: the replacement host log holds this run's token URL, and this
+    // tail is copied into the shared log a person may paste somewhere.
+    for (const line of readFileSync(hostLog, 'utf8').split(/\\r?\\n/).slice(-20)) log('  ' + redactToken(line))
   } catch {}
   process.exit(1)
 }
-log('dsh web: ' + url)
+log('dsh web: ' + redactToken(url))
 
 let cookie = ''
 let verified = false

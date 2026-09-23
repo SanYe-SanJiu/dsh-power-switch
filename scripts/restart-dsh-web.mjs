@@ -24,7 +24,7 @@ import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ensureStateDir, logPath, openWindow, readBootRecord, readRecordedTokenUrl, resolveLaunchCommand, resolveProbePort, stateDir, tokenUrlPattern } from './restart-shared.mjs'
+import { ensureStateDir, logPath, openWindow, readBootRecord, readRecordedTokenUrl, redactToken, resolveLaunchCommand, resolveProbePort, stateDir, tokenUrlPattern } from './restart-shared.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -259,12 +259,14 @@ const main = async () => {
   if (url === null) {
     log('FAILED: no token URL within 120 s; host log tail:')
     try {
+      // Redacted: the host log the tail comes from holds this run's token URL,
+      // and this line is written to the shared log the person may share.
       const tail = readFileSync(hostLog, 'utf8').split(/\r?\n/u).slice(-25)
-      for (const line of tail) if (line !== '') log(`  ${line}`)
+      for (const line of tail) if (line !== '') log(`  ${redactToken(line)}`)
     } catch { /* nothing to show */ }
     process.exit(1)
   }
-  log(`dsh web: ${url}`)
+  log(`dsh web: ${redactToken(url)}`)
 
   // Prove the plugin's browser half is in the boot graph the host now serves.
   const token = /token=([A-Za-z0-9_-]+)/u.exec(url)[1]

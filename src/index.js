@@ -44,6 +44,7 @@ import {
   resolveConfig,
   restartHelperEnv,
   schemasteryReferrers,
+  shortcutVerdict,
   shouldOpenStartupWindow,
 } from './host.js'
 
@@ -512,38 +513,22 @@ function runShortcutHelper(action, note) {
 }
 
 /**
- * Turn one helper run into either `null` (it worked) or the error answer.
- * @param action - the action that was attempted, for the log line.
- * @param outcome - the `spawnSync` result.
- * @param reported - the parsed result file.
- * @param note - the shared log sink.
- * @returns `null` on success, otherwise the answer the card shows.
- */
-function shortcutVerdict(action, outcome, reported, note) {
-  if (outcome.error !== undefined) {
-    note(`FAILED: could not run the shortcut helper: ${outcome.error.message}`)
-    return { ok: false, error: `cscript could not be run: ${outcome.error.message}` }
-  }
-  if (outcome.status !== 0) {
-    const reason = reported.error ?? `the shortcut helper exited with code ${String(outcome.status)}`
-    note(`FAILED: shortcut ${action}: ${reason}`)
-    return { ok: false, error: reason, code: outcome.status, candidates: reported.candidates }
-  }
-  return null
-}
-
-/**
  * Read the helper's result file and hand it to the pure parser.
  *
  * The file is UTF-16 because the desktop path and the shortcut name may both
  * contain non-ASCII characters.
- * @returns the parsed result, or an empty one when nothing is readable.
+ *
+ * `ran` records whether the file existed at all, and that is what separates "the
+ * helper ran and refused" from "the helper never executed": the script opens this
+ * file before it does anything else, so a missing one means a policy or a parse
+ * failure stopped it (see `shortcutVerdict`).
+ * @returns the parsed result, plus `ran`.
  */
 function readShortcutResult() {
   try {
-    return parseShortcutResult(readFileSync(SHORTCUT_RESULT, 'utf16le'))
+    return { ...parseShortcutResult(readFileSync(SHORTCUT_RESULT, 'utf16le')), ran: true }
   } catch {
-    return { entries: [], candidates: [], others: 0 }
+    return { entries: [], candidates: [], others: 0, ran: false }
   }
 }
 

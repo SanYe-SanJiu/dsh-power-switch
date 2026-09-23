@@ -638,6 +638,53 @@ export function chooseShortcutAction(entries, launcher) {
 }
 
 /**
+ * Turn one shortcut-helper run into either `null` (it worked) or the error answer.
+ *
+ * Pure, so the mapping from an exit status to a message is testable. Two failures
+ * are worth naming separately: Windows Script Host being MISSING and Windows
+ * Script Host being BLOCKED. One cannot be fixed on this machine at all, the
+ * other is a policy the person or their administrator can allow -- and a machine
+ * with Attack Surface Reduction rules or a script-host lockdown hits the second.
+ *
+ * A non-zero exit with NO result file is what a blocked script host looks like:
+ * the helper opens its result file before it does anything else, and every
+ * failure it knows about (1/2/3/4/6) leaves one behind. Silence therefore means
+ * the script never executed -- a parse failure, or a policy stopping `cscript`.
+ * @param action - the action that was attempted, for the log line.
+ * @param outcome - the `spawnSync` result.
+ * @param reported - the parsed result file; `ran` says whether one existed.
+ * @param note - the shared log sink.
+ * @returns `null` on success, otherwise the answer the card shows.
+ */
+export function shortcutVerdict(action, outcome, reported, note) {
+  const log = typeof note === 'function' ? note : () => {}
+  if (outcome.error !== undefined) {
+    const code = outcome.error.code
+    const reason = code === 'ENOENT'
+      ? 'wsh-missing'
+      : (code === 'EPERM' || code === 'EACCES' ? 'wsh-blocked' : 'wsh-failed')
+    log(`FAILED: could not run the shortcut helper (${String(code ?? 'no code')}): ${outcome.error.message}`)
+    return { ok: false, reason, error: `cscript could not be run: ${outcome.error.message}` }
+  }
+  if (outcome.status !== 0) {
+    if (reported?.ran !== true) {
+      log(`FAILED: the shortcut helper exited with code ${String(outcome.status)} without writing a result, so it never ran (Windows Script Host missing or blocked)`)
+      return {
+        ok: false,
+        reason: 'wsh-blocked',
+        code: outcome.status,
+        candidates: reported?.candidates,
+        error: 'the shortcut helper did not run: Windows Script Host (cscript.exe) is missing, or blocked by security policy (antivirus / Attack Surface Reduction / group policy)',
+      }
+    }
+    const reason = reported.error ?? `the shortcut helper exited with code ${String(outcome.status)}`
+    log(`FAILED: shortcut ${action}: ${reason}`)
+    return { ok: false, error: reason, code: outcome.status, candidates: reported.candidates }
+  }
+  return null
+}
+
+/**
  * Parse the shortcut helper's result file.
  *
  * The format is one `key=value` per line, because that is what VBScript can write
