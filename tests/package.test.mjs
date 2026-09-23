@@ -223,6 +223,19 @@ describe('generated relaunch supervisor', () => {
     assert.match(launcher, /from = statSync\(hostLog\)\.size/)
   })
 
+  it('derives that port in the restart helper too, instead of defaulting to 3080', async () => {
+    const helper = await readFile(at('scripts/restart-from-inside.mjs'), 'utf8')
+    assert.match(helper, /resolveProbePort\(/)
+    // The old form was `process.env.DSH_POWER_SWITCH_PORT ?? 3080`. The host can
+    // legitimately fail to pass the port -- it is recorded inside an async
+    // callback that polls the Web server for up to 10 s -- and then a default of
+    // 3080 makes the helper look for a host that is not there.
+    assert.doesNotMatch(helper, /DSH_POWER_SWITCH_PORT \?\? 3080/)
+    // It also states which port it used: otherwise "wrong port" and "no host
+    // running" are the same refusal in the log.
+    assert.match(helper, /log\(`port \$\{String\(port\)\} \(\$\{probe\.source\}\)`\)/)
+  })
+
   it('marks the host that a deliberate opener started, so no second window appears', async () => {
     // Three processes open this boot's window on purpose. Each must tell the host
     // half that the job is taken: without the marker the plugin opens ANOTHER
@@ -241,6 +254,22 @@ describe('generated relaunch supervisor', () => {
     assert.notEqual(imported, -1)
     assert.notEqual(checkedIn, -1)
     assert.ok(imported < checkedIn, 'the handshake must not be written before the helper module resolves')
+  })
+
+  it('proves a host log is writable before it checks in', async () => {
+    const generated = await build()
+    // The check-in is the promise that lets the host exit, and the replacement's
+    // stdout needs a file. Opening that file only after checking in is the audit's
+    // "the switch kills the service" path: the host is gone, and the supervisor
+    // then gives up on an unopenable log with nobody left to bring it back.
+    const probed = generated.indexOf('const logProbe = openHostLog()')
+    const checkedIn = generated.indexOf("appendFileSync(handshake")
+    assert.notEqual(probed, -1, 'the supervisor must probe for an openable host log')
+    assert.notEqual(checkedIn, -1)
+    assert.ok(probed < checkedIn, 'a check-in promises a replacement, so it must have somewhere to write first')
+    // The probe needs a HOISTED declaration: a `const` arrow is in its temporal
+    // dead zone at that call site, which would turn the new guard into a crash.
+    assert.match(generated, /function openHostLog\(\)/)
   })
 
   it('reads the launch mode from the settings document it was pointed at', async () => {

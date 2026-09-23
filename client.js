@@ -441,8 +441,17 @@ window.__ModuleLoader__.load({
       const [shortcutLines, setShortcutLines] = React.useState(null)
       /** The pending-switch recovery timer, so unmounting can cancel it. */
       const switchTimer = React.useRef(null)
+      /**
+       * The shutdown watch's next poll, for the same reason.
+       *
+       * That watch is a chain of `setTimeout` calls, so cancelling it means
+       * holding the handle that arms the next link; an unmounted card must not
+       * keep asking the network whether the process is gone for up to 15 s.
+       */
+      const revivalTimer = React.useRef(null)
       React.useEffect(() => () => {
         if (switchTimer.current !== null) window.clearTimeout(switchTimer.current)
+        if (revivalTimer.current !== null) window.clearTimeout(revivalTimer.current)
       }, [])
 
       if (view === 'summary') return t('summary')
@@ -513,6 +522,10 @@ window.__ModuleLoader__.load({
         // A test harness that owns the event loop can opt out of the polling.
         if (window.__DSH_POWER_SWITCH_NO_REVIVAL__ === true) return
         const deadline = Date.now() + REVIVE_WINDOW_MS
+        /** Arm the next poll THROUGH the ref, so unmounting cancels the chain. */
+        const arm = () => {
+          revivalTimer.current = window.setTimeout(() => { void probe() }, PROBE_INTERVAL_MS)
+        }
         const probe = async () => {
           let reachable = false
           try {
@@ -536,9 +549,9 @@ window.__ModuleLoader__.load({
             setMessage(t('stillRunning'))
             return
           }
-          window.setTimeout(() => { void probe() }, PROBE_INTERVAL_MS)
+          arm()
         }
-        window.setTimeout(() => { void probe() }, PROBE_INTERVAL_MS)
+        arm()
       }
 
       /**

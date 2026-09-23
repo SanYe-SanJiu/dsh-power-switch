@@ -20,12 +20,31 @@ import { appendFileSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ensureStateDir, logPath, readBootRecord, readRecordedTokenUrl, settingsPath, stateDir } from './restart-shared.mjs'
+import { ensureStateDir, logPath, readBootRecord, readRecordedTokenUrl, resolveProbePort, settingsPath, stateDir } from './restart-shared.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 
-const port = Number(process.env.DSH_POWER_SWITCH_PORT ?? 3080)
+/**
+ * The port to work on: passed down by the host, DERIVED when it was not.
+ *
+ * The host hands over its own port, and that is the normal path. It can also be
+ * missing: the port is recorded inside an async callback that polls the Web
+ * server for up to 10 s, so a restart asked for in the first moments of a boot
+ * spawns this helper with no `DSH_POWER_SWITCH_PORT`, and the old default here
+ * was 3080 — on a machine serving elsewhere that is the wrong port, so the helper
+ * would look for a host that is not there and refuse.
+ *
+ * Deriving it costs nothing and cannot be worse: the boot record and the URL the
+ * host wrote about itself are both readable from the state directory.
+ */
+const envPort = Number(process.env.DSH_POWER_SWITCH_PORT)
+const probe = resolveProbePort({
+  explicit: Number.isInteger(envPort) && envPort > 0 ? envPort : null,
+  recordedUrl: readRecordedTokenUrl(),
+  bootArgs: readBootRecord()?.args ?? [],
+})
+const port = probe.port
 const delaySeconds = Number(process.env.DSH_POWER_SWITCH_DELAY ?? 6)
 /**
  * How the replacement should be presented: `'app'` opens a browser app window
@@ -89,6 +108,11 @@ const reportCrash = (label, error) => {
 }
 process.on('uncaughtException', (error) => { reportCrash('uncaught exception', error) })
 process.on('unhandledRejection', (error) => { reportCrash('unhandled rejection', error) })
+
+// Recorded before anything else: several later refusals are really "the helper
+// was looking at the wrong port", and this line is the only place that says
+// which port it used and where that number came from.
+log(`port ${String(port)} (${probe.source})`)
 
 /**
  * The log the REPLACEMENT host's stdout goes to, first choice then fallback.
@@ -385,6 +409,27 @@ if (typeof boot.args[0] === 'string' && /\\.(?:m|c)?js$/u.test(boot.args[0]) && 
   process.exit(1)
 }
 
+/*
+ * PROVE a host log can be opened BEFORE checking in.
+ *
+ * The handshake is a promise to the host that a replacement is on its way, and
+ * the host then exits -- nothing else can bring it back. The replacement's stdout
+ * needs a file, and when no candidate could be opened this supervisor gave up
+ * after its retries, with the host already gone. That is the audit's "the switch
+ * kills the service" path, narrowed by the boot-record pre-flight above but not
+ * closed by it.
+ *
+ * Refusing HERE leaves the host running, so the card reports a refusal it can
+ * explain. The file is opened and closed rather than held: the real open happens
+ * after the old process has exited and released its own handle.
+ */
+const logProbe = openHostLog()
+if (logProbe.stream === null) {
+  log('FAILED: no host log can be opened (' + String(logProbe.error?.code ?? 'unknown') + '), so a replacement would have nowhere to write its output; refusing to check in')
+  process.exit(1)
+}
+try { closeSync(logProbe.stream) } catch {}
+
 if (typeof handshake === 'string' && handshake !== '') {
   try { appendFileSync(handshake, 'pid ' + String(process.pid) + '\\n') } catch (error) {
     log('could not write the handshake file: ' + error.message)
@@ -446,8 +491,13 @@ await sleep(400)
  * still locked by the process being replaced, which is the whole reason a
  * per-run name exists.
  * @returns the opened stream and its path, or null when none could be opened.
+ *
+ * Declared as a FUNCTION, not a const arrow: the pre-flight above calls it
+ * before the handshake, and a const binding is in the temporal dead zone until
+ * its line runs -- which would have turned the new guard into a crash instead of
+ * a refusal.
  */
-const openHostLog = () => {
+function openHostLog() {
   let lastError = null
   for (const candidate of hostLogCandidates) {
     try {

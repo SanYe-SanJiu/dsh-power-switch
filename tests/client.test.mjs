@@ -342,6 +342,21 @@ describe('client bundle artifact', () => {
     } finally { bundle.restore() }
   })
 
+  it('cancels the shutdown watch when the card unmounts', async () => {
+    // The watch is a CHAIN of setTimeout calls, so the only way to stop it is to
+    // hold the handle that arms the next link: a bare recursive call kept polling
+    // for up to 15 s after the card was gone, calling setState on an unmounted
+    // component. The harness here never unmounts a card, so this is asserted on
+    // the artifact -- exactly one arming point, kept in a ref that the unmount
+    // cleanup clears.
+    const bundle = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+    const armings = bundle.match(/window\.setTimeout\(\(\) => \{ void probe\(\) \}, PROBE_INTERVAL_MS\)/gu) ?? []
+    assert.equal(armings.length, 1, 'the watch must arm its next poll in exactly one place')
+    assert.match(bundle, /revivalTimer\.current = window\.setTimeout\(\(\) => \{ void probe\(\) \}, PROBE_INTERVAL_MS\)/)
+    assert.match(bundle, /const revivalTimer = React\.useRef\(null\)/)
+    assert.match(bundle, /window\.clearTimeout\(revivalTimer\.current\)/)
+  })
+
   it('never names a package row that the boot graph cannot compose', async () => {
     const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
     const rows = manifest.dsh.client.inject ?? []

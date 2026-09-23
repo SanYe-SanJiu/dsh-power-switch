@@ -10,9 +10,43 @@
  */
 
 import { strict as assert } from 'node:assert'
+import { createRequire } from 'node:module'
 import { describe, it } from 'node:test'
+import { pathToFileURL } from 'node:url'
 import { POWER_ROUTE } from '../src/host.js'
 import { apply, inject, name } from '../src/index.js'
+
+/**
+ * Whether the HOST-provided schema library is reachable from here.
+ *
+ * `@deepseek-ai/schemastery` is an optional peer dependency that npm does not
+ * carry: the harness injects it, so a plain checkout can have an EMPTY
+ * `node_modules/@deepseek-ai/schemastery` directory (observed), or none at all.
+ * The plugin then skips the settings section BY DESIGN and still registers every
+ * route — but the two tests that assert the section would fail with `0 !== 1`,
+ * a message that names the symptom and not the cause. They are skipped instead,
+ * so a red suite means a real regression.
+ *
+ * The probe mirrors `loadSchemaBuilder`'s referrers: the running entry point
+ * first, then this package.
+ */
+const schemasteryAvailable = (() => {
+  const referrers = [
+    typeof process.argv[1] === 'string' && process.argv[1] !== '' ? pathToFileURL(process.argv[1]).href : '',
+    new URL('../src/index.js', import.meta.url).href,
+  ].filter((referrer) => referrer !== '')
+  return referrers.some((referrer) => {
+    try {
+      createRequire(referrer).resolve('@deepseek-ai/schemastery')
+      return true
+    } catch {
+      return false
+    }
+  })
+})()
+
+/** Skip reason shared by the two tests that need the settings section. */
+const NO_SCHEMASTERY = '@deepseek-ai/schemastery is not installed here; the plugin skips the settings section by design'
 
 /**
  * A context double recording registrations, effects, and injected services.
@@ -177,7 +211,8 @@ describe('host plugin wiring', () => {
     assert.deepEqual(codes, [0])
   })
 
-  it('mounts a settings section and keeps a write scope for the card', () => {
+  it('mounts a settings section and keeps a write scope for the card', (t) => {
+    if (!schemasteryAvailable) return t.skip(NO_SCHEMASTERY)
     const sections = []
     const registrations = []
     const { ctx } = makeContext({
@@ -207,7 +242,8 @@ describe('host plugin wiring', () => {
     })
   })
 
-  it('persists the mode into the composition entry, and refuses to leave when it cannot restart', async () => {
+  it('persists the mode into the composition entry, and refuses to leave when it cannot restart', async (t) => {
+    if (!schemasteryAvailable) return t.skip(NO_SCHEMASTERY)
     let patch
     const codes = []
     const { ctx, state } = makeContext({

@@ -744,7 +744,10 @@ describe('createRestartHandler', () => {
       // A tiny hold by default: the ordering is what this suite is about, and
       // the configured values are asserted from the response payload.
       config: () => resolveConfig({ delayMs: 5, ...config }),
-      persist: (mode) => { persisted.push(mode); if (persist !== undefined) return persist(mode); return true },
+      // ASYNC, because the real `persistLaunchMode` is: a synchronous double here
+      // is what let a missing `await` at the call site put a Promise in the
+      // response and still pass every assertion in this suite.
+      persist: async (mode) => { persisted.push(mode); if (persist !== undefined) return persist(mode); return true },
       respawn: (mode) => { persisted.respawnMode = mode; return respawn(mode) },
       ...(planProblem === undefined ? {} : { planProblem }),
       ...(awaitRespawn === undefined ? {} : { awaitRespawn }),
@@ -776,6 +779,9 @@ describe('createRestartHandler', () => {
     const payload = response.json()
     assert.equal(payload.ok, true)
     assert.equal(payload.launchMode, 'app')
+    // A BOOLEAN, not the `{}` a serialized Promise becomes: the api contract is
+    // what tells a consumer whether the settings document accepted the write.
+    assert.equal(typeof payload.persisted, 'boolean')
     assert.equal(payload.persisted, true)
     assert.equal(payload.helperPid, 4242)
     assert.deepEqual(persisted.slice(0, 1), ['app'])
@@ -810,8 +816,9 @@ describe('createRestartHandler', () => {
   it('reports a settings write that was refused, and still restarts', async () => {
     // The composition entry is always updated, so a refused settings write must
     // not block the restart the person asked for -- it is reported instead.
-    const { response, exits } = await drive2({ persist: () => false, request: { body: '{"launchMode":"app"}' } })
+    const { response, exits } = await drive2({ persist: async () => false, request: { body: '{"launchMode":"app"}' } })
     assert.equal(response.json().persisted, false)
+    assert.equal(typeof response.json().persisted, 'boolean')
     assert.equal(response.json().ok, true)
     assert.equal(exits.length, 1)
   })
