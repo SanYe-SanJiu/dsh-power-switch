@@ -10,6 +10,7 @@
  */
 
 import { strict as assert } from 'node:assert'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -18,7 +19,7 @@ import { after, before, describe, it } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { CONFIG_ROUTE, POWER_ROUTE } from '../src/host.js'
 import { apply, inject, name } from '../src/index.js'
-import { readRecordedLaunchMode, writeRecordedLaunchMode } from '../scripts/restart-shared.mjs'
+import { readRecordedLaunchMode, stateDir, writeRecordedLaunchMode } from '../scripts/restart-shared.mjs'
 
 /**
  * Mounting this plugin WRITES state: it records the launch mode for the next
@@ -164,6 +165,23 @@ describe('host plugin wiring', () => {
     apply(ctx, {})
     await new Promise((resolve) => { setTimeout(resolve, 40) })
     assert.equal(readRecordedLaunchMode(), 'app', 'the row default must not clobber a recorded choice')
+  })
+
+  it('keeps a shortcut-repair copy where removing the package cannot reach it', async () => {
+    // Adopting the desktop icon points the shortcut at a launcher INSIDE the package,
+    // so removing the package used to leave a desktop icon that could not start DSH at
+    // all. The record of the original always lived in the state directory; the tool
+    // that replays it now does too, refreshed on every boot.
+    const { ctx } = makeContext()
+    apply(ctx, {})
+    await new Promise((resolve) => { setTimeout(resolve, 40) })
+    const copied = join(stateDir(), 'restore-shortcut.vbs')
+    assert.ok(existsSync(copied), 'the repair script must be kept outside the package')
+    assert.equal(
+      readFileSync(copied, 'utf8'),
+      readFileSync(new URL('../scripts/restore-shortcut.vbs', import.meta.url), 'utf8'),
+      'the copy must be the packaged script, so it can be trusted after an uninstall',
+    )
   })
 
   it('reports the mode it will actually launch with, on a host that generates no form', async () => {

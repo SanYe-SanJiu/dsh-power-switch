@@ -92,7 +92,7 @@ Restart DSH once after installing, then open **Settings -> Plugins**: a card lab
 ### Verifying and uninstalling
 
 - Verify: the profile's `dsh.profile.bundles` contains this plugin, and `node_modules\dsh-power-switch` is an ordinary directory (a local `link:` install is a symbolic link or junction).
-- Uninstall: `dsh plugin --profile web remove dsh-power-switch`.
+- Uninstall: if the shortcut is currently adopted (the mode is app window), switch back to the normal tab in the card first, so the original launch method is restored; then run `dsh plugin --profile web remove dsh-power-switch`. Should the package be removed while the shortcut is still adopted, double-click `restore-shortcut.vbs` in the state directory — it is copied there at every boot precisely so it outlives the package, and it puts the original shortcut back from `shortcut-backup.txt`. Uninstalling while the shortcut is adopted leaves that shortcut pointing at the package's own launcher, which no longer exists.
 - Return to a local checkout: uninstall first, then run `dsh plugin --profile web add link:<absolute path to this checkout>`; both steps should carry the one-shot flag above.
 - Do not install the GitHub build and a local `link:` build into the same profile: the package name is identical, so the later install replaces the earlier one.
 
@@ -154,7 +154,7 @@ In any of them the shutdown feature is unaffected and the setting has already be
 
 ### Desktop shortcut
 
-Switching to the app window adopts the existing DSH shortcut, or creates `DSH 启动器` when none exists; switching back to a normal tab restores the original launch method. The original target, arguments, icon and description are recorded in `shortcut-backup.txt` in the state directory, so the change can be undone at any time.
+Switching to the app window adopts the existing DSH shortcut, or creates `DSH 启动器` when none exists; switching back to a normal tab restores the original launch method. The original target, arguments, icon and description are recorded in `shortcut-backup.txt` in the state directory, so the change can be undone at any time. A copy of the repair script is placed next to that record at every boot, so an adopted shortcut can also be recovered by double-clicking it after the package is gone — uninstalling the plugin must never cost you a working shortcut.
 
 Why this layer is necessary: `dsh web` hands its URL to the default browser, so it always opens a tab. It has no app-window option, and that hand-off runs a platform opener with a scrubbed environment, so no plugin can intercept it. The window shape for the next launch can therefore only be chosen by whatever launches dsh — which is this package's launcher, `scripts/launch-dsh.mjs` (wrapped by `launch-dsh.vbs`). It reads the stored mode, starts the host with the recorded launch command when no host is running, waits for the token the host prints, and opens the window in that mode.
 
@@ -189,6 +189,7 @@ Runtime state lives in **`$DSH_HOME/storages/dsh-power-switch/`**, never inside 
 | `node-path.txt` | The node.exe path the host is running on; both `.vbs` wrappers read it, so a Node installed through nvm/fnm/volta or an app store can still launch DSH from the shortcut |
 | `dsh-web.<stamp>.log` | The stdout of each host this plugin started, including that run's token URL |
 | `shortcut-backup.txt` | The original shortcut recorded before it was adopted, for restoring it |
+| `restore-shortcut.vbs` | A copy of the repair script, made at every boot. Double-clicking it restores the shortcut from `shortcut-backup.txt` and then deletes that record; it is the reason an adopted shortcut is still recoverable after the package itself is gone |
 | `shortcut-result.txt` | The raw result of the most recent shortcut operation |
 
 State is kept outside the package for two reasons: the package may sit in a read-only store, and the log contains authenticated token URLs and local paths, so a log inside the package would be a log inside the repository.
@@ -230,14 +231,14 @@ The plugin reads no credentials, makes no network requests and never touches ses
 
 Two boundaries are worth stating plainly rather than leaving to be discovered:
 
-- **`boot.json` is a trust boundary.** The restart replays the command line the running host recorded for itself, verbatim — that is the whole design, and it is why no installation path is ever reconstructed. Anyone who can write the state directory can therefore have that command executed with your privileges. That is not a privilege escalation (the same is true of `settings.yaml`, the profile's plugin list, and every other file the harness reads), and it is exactly why the state directory lives inside your user profile and never inside the package. Treat write access to `$DSH_HOME` as equivalent to running code as yourself.
+- **`boot.json` is a trust boundary.** The restart replays the command line the running host recorded for itself, verbatim — that is the whole design, and it is why no installation path is ever reconstructed. Anyone who can write the state directory can therefore have that command executed with your privileges. That is not a privilege escalation (the same is true of `settings.yaml`, the profile's plugin list, and every other file the harness reads), and it is exactly why the state directory lives inside your user profile and never inside the package. Treat write access to `$DSH_HOME` as equivalent to running code as yourself. The repair script in the state directory belongs to the same boundary: it is refreshed from the package at every boot and is meant to be double-clicked, so a state-directory writer could put something else under that name. It only ever edits a `.lnk` from the recorded fields, but treat it like any other executable in your profile.
 - **The authenticated `?token=…` URL is a local access credential.** It is written in exactly two places, both under `$DSH_HOME/storages/dsh-power-switch/`: the host's own stdout log (`dsh-web.<stamp>.log`), which is how a replacement host is identified, and `token-url.txt`. Every diagnostic line that would repeat it is redacted to `?token=***` — including the wrapper log in `%TEMP%`, which a desktop shortcut writes. Do not paste those two files anywhere public.
 
 ## Development
 
 ```sh
 npm run build                            # copy src/ to lib/ (the host-half artifact)
-node scripts/run-tests.mjs               # the four suites (node:test)
+node scripts/run-tests.mjs               # every suite in tests/ (node:test), including the one that runs the repair script on the real Windows Script Host
 node scripts/verify-client-artifact.mjs  # fetch client.js over real HTTP and render both views
 node scripts/verify-live.mjs             # health-check a running DSH
 ```

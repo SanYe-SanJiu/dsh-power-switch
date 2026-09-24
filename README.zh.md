@@ -88,7 +88,7 @@ dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minim
 ### 安装校验与卸载
 
 - 校验：profile 的 `dsh.profile.bundles` 中包含本插件，且 `node_modules\dsh-power-switch` 为普通目录（本地 `link:` 安装为符号链接或 junction）。
-- 卸载：`dsh plugin --profile web remove dsh-power-switch`。
+- 卸载：若当前处于应用窗口模式（快捷方式已被接管），先在卡片中切回普通标签页以还原原有启动方式，再执行 `dsh plugin --profile web remove dsh-power-switch`。若已在接管状态下卸载了插件，双击状态目录中的 `restore-shortcut.vbs` 即可：该脚本每次启动都会复制到状态目录，正是为了在包消失后仍可用，它会依据 `shortcut-backup.txt` 还原原快捷方式。在接管状态下卸载，会让快捷方式指向本包自己的启动器——而它已不存在。
 - 切换回本地检出：先卸载，再执行 `dsh plugin --profile web add link:<本包检出的绝对路径>`；两步均建议附带上述一次性开关。
 - 同一 profile 中不要同时安装 GitHub 版本与本地 `link:` 版本：包名相同，后安装者会替换先安装者。
 
@@ -150,7 +150,7 @@ DSH 0.1.7 更换了插件设置模型：`ctx.settings` 变成生成式表单服�
 
 ### 桌面快捷方式
 
-切换到应用窗口时接管已有的 DSH 快捷方式（不存在时新建 `DSH 启动器`），切回普通标签页时还原为原有启动方式。接管前的目标、参数、图标与描述记录在状态目录的 `shortcut-backup.txt` 中，可随时还原。
+切换到应用窗口时接管已有的 DSH 快捷方式（不存在时新建 `DSH 启动器`），切回普通标签页时还原为原有启动方式。接管前的目标、参数、图标与描述记录在状态目录的 `shortcut-backup.txt` 中，可随时还原。每次启动还会把修复脚本的副本放到该记录旁边，因此即使包已被卸载，双击它仍能还原快捷方式——卸载插件不该以损失一个可用的快捷方式为代价。
 
 需要这一层的原因：`dsh web` 将 URL 交给默认浏览器，因此始终打开标签页；它没有应用窗口选项，且该交接由使用清空环境变量的平台 opener 启动，插件无法拦截。因此「下次启动的窗口形态」只能由启动 dsh 的一方决定，即本包提供的启动器 `scripts/launch-dsh.mjs`（外壳 `launch-dsh.vbs`）：读取设置中的模式 → 未运行服务时按记录的启动命令启动 → 等待宿主输出 token → 按模式打开窗口。
 
@@ -184,6 +184,7 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 | `node-path.txt` | 宿主当前使用的 node.exe 路径；两个 `.vbs` 外壳读取该文件，因此经 nvm/fnm/volta 或应用商店安装的 Node 也可由快捷方式启动 |
 | `dsh-web.<时间戳>.log` | 由本插件启动的各次宿主的 stdout（包含该次运行的 token URL） |
 | `shortcut-backup.txt` | 接管前的原始快捷方式，用于还原 |
+| `restore-shortcut.vbs` | 修复脚本的副本，每次启动时写入。双击后依据 `shortcut-backup.txt` 还原快捷方式并删除该记录；包被卸载后接管过的快捷方式仍可恢复，靠的就是它 |
 | `shortcut-result.txt` | 最近一次快捷方式操作的原始结果 |
 
 状态文件置于包外的原因：包可能位于只读存储中；且日志包含认证 token URL 与本机路径，写入包目录等同于写入版本库。
@@ -225,14 +226,14 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 
 有两条边界应当明确写出，而不是等人踩到：
 
-- **`boot.json` 是一条信任边界。** 重启链路会**原样重放**运行中宿主为自己记录的命令行——这正是设计本身，也是它从不重建安装路径的原因。因此，任何能写入状态目录的人都能让该命令以你的权限执行。这不是权限提升（`settings.yaml`、profile 的插件清单，以及宿主读取的任何其它文件同理），而这恰恰是状态目录位于用户配置文件内、绝不放进包目录的原因。请把"可写 `$DSH_HOME`"视同"可以你的身份执行代码"。
+- **`boot.json` 是一条信任边界。** 重启链路会**原样重放**运行中宿主为自己记录的命令行——这正是设计本身，也是它从不重建安装路径的原因。因此，任何能写入状态目录的人都能让该命令以你的权限执行。这不是权限提升（`settings.yaml`、profile 的插件清单，以及宿主读取的任何其它文件同理），而这恰恰是状态目录位于用户配置文件内、绝不放进包目录的原因。请把"可写 `$DSH_HOME`"视同"可以你的身份执行代码"。状态目录中的修复脚本同属这条边界：它每次启动都从包内刷新，且本就设计为供双击执行，因此能写入状态目录的人可以在此名下放入别的东西。它自身只会依据记录字段改写 `.lnk`，但仍应按"用户配置文件里的可执行文件"对待。
 - **带认证的 `?token=…` URL 是本地访问凭据。** 它只写在两处，都在 `$DSH_HOME/storages/dsh-power-switch/` 下：宿主自身的 stdout 日志（`dsh-web.<时间戳>.log`，替代进程据此确认服务进程）与 `token-url.txt`。任何会重复它的诊断行都脱敏为 `?token=***`——包括桌面快捷方式写入 `%TEMP%` 的外壳日志。请勿将这两个文件贴到公开场合。
 
 ## 开发
 
 ```sh
 npm run build                            # 将 src/ 复制为 lib/（宿主半产物）
-node scripts/run-tests.mjs               # 四个测试套件（node:test）
+node scripts/run-tests.mjs               # tests/ 下的全部套件（node:test），其中一套会在真实的 Windows Script Host 上执行修复脚本
 node scripts/verify-client-artifact.mjs  # 经真实 HTTP 获取 client.js 并渲染两个视图
 node scripts/verify-live.mjs             # 对运行中的 DSH 做健康检查
 ```

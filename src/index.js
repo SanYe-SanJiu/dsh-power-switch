@@ -12,7 +12,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -257,6 +257,27 @@ export function apply(ctx, config = {}, timings = {}) {
     } catch {
       // A state directory that cannot be written costs persistence, not the boot.
     }
+  }
+
+  /**
+   * Keep the shortcut-repair script where removing the package cannot reach it.
+   *
+   * Adopting the desktop icon is reversible, but the tool that reverses it used to
+   * live inside the package — so uninstalling the plugin left the shortcut pointing at
+   * a launcher that no longer existed, and the desktop icon could not start DSH at
+   * all. The record of the original has always been written to the state directory;
+   * this puts the replayer beside it, on every boot (a few kilobytes, idempotent, and
+   * refreshed so the copy tracks the installed version).
+   */
+  try {
+    copyFileSync(
+      join(WORKSPACE_ROOT, 'scripts', 'restore-shortcut.vbs'),
+      // Resolved HERE rather than from the module-load snapshot: this has to land in
+      // the harness home the running host actually uses.
+      join(ensureStateDir(), 'restore-shortcut.vbs'),
+    )
+  } catch (error) {
+    note(`could not keep a shortcut-repair copy outside the package (${String(error?.message ?? error)})`)
   }
 
   /**

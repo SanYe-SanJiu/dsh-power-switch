@@ -641,6 +641,29 @@ describe('desktop shortcut placement', () => {
     assert.ok(manifest.files.includes('locale'))
   })
 
+  it('ships a repair script that works with the package gone', async () => {
+    // A shortcut this plugin adopted points INTO the package, so uninstalling used to
+    // take the desktop icon down with it. The record of the original always lived in
+    // the state directory; this script replays it from there, beside its own copy.
+    const vbs = await readFile(at('scripts/restore-shortcut.vbs'), 'utf8')
+    // eslint-disable-next-line no-control-regex -- ASCII-ness is exactly the claim
+    assert.doesNotMatch(vbs, /[^\u0000-\u007F]/u, 'restore-shortcut.vbs must stay ASCII-only')
+    // The record is UTF-16, and the fallback is the harness home the wrappers use.
+    assert.match(vbs, /OpenTextFile\(backupFile, 1, False, -1\)/)
+    assert.match(vbs, /%DSH_HOME%/)
+    // Both kinds: we adopted somebody's icon, or we created one.
+    assert.match(vbs, /If kind = "created" Then/)
+    assert.match(vbs, /fso\.DeleteFile lnkPath, True/)
+    assert.match(vbs, /link\.TargetPath = bag\("target"\)/)
+    assert.match(vbs, /link\.Description = bag\("description"\)/)
+    // An incomplete record is refused rather than half-applied.
+    assert.match(vbs, /The record is incomplete \(missing /)
+    // And the host keeps that copy where uninstalling cannot reach it.
+    const host = await readFile(at('src/index.js'), 'utf8')
+    assert.match(host, /join\(WORKSPACE_ROOT, 'scripts', 'restore-shortcut\.vbs'\)/)
+    assert.match(host, /join\(ensureStateDir\(\), 'restore-shortcut\.vbs'\)/)
+  })
+
   it('never lets the card choose a target, a path or a name', async () => {
     const host = await readFile(at('src/index.js'), 'utf8')
     assert.match(host, /createShortcutHandler\(\{ run: \(action\) => runShortcutHelper\(action, note\) \}\)/)
