@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { pathToFileURL } from 'node:url'
-import { POWER_ROUTE } from '../src/host.js'
+import { CONFIG_ROUTE, POWER_ROUTE } from '../src/host.js'
 import { apply, inject, name } from '../src/index.js'
 import { readRecordedLaunchMode, writeRecordedLaunchMode } from '../scripts/restart-shared.mjs'
 
@@ -164,6 +164,22 @@ describe('host plugin wiring', () => {
     apply(ctx, {})
     await new Promise((resolve) => { setTimeout(resolve, 40) })
     assert.equal(readRecordedLaunchMode(), 'app', 'the row default must not clobber a recorded choice')
+  })
+
+  it('reports the mode it will actually launch with, on a host that generates no form', async () => {
+    // The card reads GET /config to say what the NEXT launch will do. On this host the
+    // record is the only source of that answer, so reporting the row default instead
+    // would tell the person "tab" while the launcher opened the app window they chose —
+    // the disagreement that helped hide the original overwrite.
+    const { ctx, state } = makeContext({ settings: { describe: () => [], update: () => {} } })
+    writeRecordedLaunchMode('app')
+    apply(ctx, {})
+    await new Promise((resolve) => { setTimeout(resolve, 40) })
+    const route = state.routes.find((entry) => entry.path === CONFIG_ROUTE)
+    assert.notEqual(route, undefined, 'the configuration route must be registered')
+    const response = makeResponse()
+    route.handler(makeRequest({ method: 'GET', url: CONFIG_ROUTE, headers: TRUSTED }), response)
+    assert.equal(response.json().launchMode, 'app')
   })
 
   it('still follows a form value the host does track for this entry', async () => {
