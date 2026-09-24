@@ -110,6 +110,19 @@ The `appExit` service becomes available progressively while the host boots. A sh
 
 In app-window mode the page closes itself once the process is gone. In normal-tab mode a browser refuses to let a page close a tab the user opened, so the card states to press **Ctrl+W**. That is a browser restriction, not a gap in the plugin.
 
+## Restart
+
+Restarting is the last step of the mode switch, and it also stands on its own when the launch about to be replaced is the only thing you want to change:
+
+```powershell
+# double-click scripts\restart-dsh-web.vbs, or run the script directly
+node scripts\restart-dsh-web.mjs --delay-seconds 3
+```
+
+The manual entry stops the host on the port it is **actually** serving on, starts the recorded launch command again, waits for the new run's token URL, and then proves this plugin's browser half made it into the boot graph that host serves. `--port N` overrides the port it works on, `--cli <entry>` names the CLI on a machine with no recorded command, and `--open` / `--app` open a window afterwards.
+
+Both entries share one rule: the replacement is started by a helper that must confirm it is up **before** the host is allowed to exit. When that confirmation does not arrive the host keeps serving and the answer says why — a refusal is always better than a service that never comes back. What "the recorded launch command" means, and the refusals that apply, are described under [Launch mode](#launch-mode-app-window--normal-tab); the same rules govern this entry.
+
 ## Launch mode: app window / normal tab
 
 | | App window | Normal tab |
