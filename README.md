@@ -24,6 +24,8 @@ App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), 
 
 ## Install
 
+You should cd to the deepseek harness folder first
+
  The three commands below are exactly equivalent — they differ only in how DSH is invoked:
 
 ```powershell
