@@ -24,27 +24,31 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ## 安装
 
-先按 DSH 的运行方式选一条命令，再按需替换包规格：
+请**钉住已发布的 tag**。下面三条命令完全等价，区别只在"如何调用 DSH"：
 
 ```powershell
 # ① 已安装 dsh 命令（npm 全局安装或桌面版）
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
 
 # ② 从源码检出运行，且检出已构建（存在 apps/cli/lib/bin.js）
 #    需在检出根目录执行
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
 
 # ③ 从源码检出运行，未构建或希望直接跑 TypeScript 源码
 #    需在检出根目录执行；官方开发文档（docs/user/develop/basic/publish.md）
 #    对源码检出的写法就是这条
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
 ```
 
-三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。包规格部分可换成：
+三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。
+
+**为什么命令里要带 tag。** git 安装会把仓库取下来并执行其中的代码，上游指南因此要求钉住提交 `#<sha>`，以便"之后的推送不能悄悄改变实际运行的内容"。这里用已发布的 tag 达到同样效果——本项目**从不移动已发布的 tag**（见下方说明）——且更易读；想要最严格的形式可换成 `#<commit-sha>`。
+
+其它写法：
 
 ```powershell
-# 指定提交：git 安装由 pnpm 缓存，重复 add 不保证刷新；指定提交也可复现
-<入口> plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
+# 跟随分支：安装时解析当时的 main。pnpm 按 ref 缓存 git 安装，重复 add 也不保证刷新
+<入口> plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
 # 从本地检出安装（用于开发；link: 保持指向检出目录，不复制）
 <入口> plugin --profile web add link:<本包检出的绝对路径>
@@ -57,6 +61,7 @@ pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 - `add` 之后的参数原样转发给 pnpm，因此 npm 包名、`github:owner/repo[#ref]`、`link:路径` 与 tarball URL 均可使用。相对路径（`./x`、`../x`、`link:../x`）以执行命令时的工作目录为基准解析，而非以 profile 目录为基准。
 - 安装完成后，DSH 会自动将该包加入 profile 的 `dsh.profile.bundles`（该包声明了 `dsh.bundle.patch`），无需手工编辑 JSON。未声明 bundle patch 的包会收到"仅作为普通依赖安装"的提示。
 - 仓库中包含构建产物 `lib/`，因此从 GitHub 安装不需要构建步骤，也不会触发 pnpm 的 allowBuilds 拦截。
+- 发布遵循**只加不改**：修复以新版本号发布（`1.1.1`、`1.1.2`…），已发布的 tag 绝不移动、删除后重指，因此钉住的安装不会在使用者脚下变化。
 - 包自带展示元数据，格式按 DSH 0.1.7 的读法：`package.json.icon`（清单相对路径的 SVG）与 `locale/<语言>.json` 里的 `meta` 块（插件列表显示的标题与简介）。两者都通过 `exports` 导出（`./locale/*.json`）以便解析器取到；更早的 DSH 版本会直接忽略这些字段。
 
 ### 安装失败时的两种情形

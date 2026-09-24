@@ -24,29 +24,33 @@ App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), 
 
 ## Install
 
-Pick the command that matches how DSH runs, then adjust the package spec as needed:
+Pin a released tag. The three commands below are exactly equivalent — they differ only in how DSH is invoked:
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
 
 # ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
 #    run this from the checkout root
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
 
 # ③ running from a source checkout that is not built, or you prefer the TypeScript
 #    sources — this is the form the upstream development documentation
 #    (docs/user/develop/basic/publish.md) gives for a source checkout
 #    run this from the checkout root
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
 ```
 
-All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`). The package spec can be swapped for:
+All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
+
+**Why the tag is part of the command.** A git install fetches the repository and runs the code it finds, and the upstream guide therefore asks authors and users to pin a commit `#<sha>`, "so a later push cannot silently change what runs". A released tag gives the same guarantee here — this project never moves one (see the notes below) — and reads better; substitute `#<commit-sha>` for the strictest form.
+
+Other specs:
 
 ```powershell
-# pinned to a commit: git installs are cached by pnpm, so a repeated add is not
-# guaranteed to refresh, and a pinned commit is reproducible
-<entry> plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#<commit-sha>
+# track the branch: resolves whatever `main` is at that moment. pnpm caches git
+# installs by ref, so a repeated add is not guaranteed to refresh either
+<entry> plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 
 # from a local checkout (for development; link: keeps pointing at the checkout
 # instead of copying it)
@@ -60,6 +64,7 @@ Notes:
 - The arguments after `add` are forwarded to pnpm verbatim, so an npm package name, a `github:owner/repo[#ref]` spec, a `link:path` and a tarball URL are all accepted. A relative path (`./x`, `../x`, `link:../x`) is resolved against the working directory the command is run from, not against the profile directory.
 - Installation registers the bundle automatically: DSH appends the package to the profile's `dsh.profile.bundles` because the package declares `dsh.bundle.patch`, so no JSON editing is needed. A package without a bundle patch is reported as installed only as a plain dependency.
 - The built host artifact `lib/` is committed with the repository, so a GitHub install needs no build step and never triggers pnpm's allowBuilds prompt.
+- Releases are **append-only**: a fix ships as a new version (`1.1.1`, `1.1.2`, …) and a released tag is never moved, deleted and re-pointed, so a pinned install cannot change under the user's feet.
 - The package carries its own display metadata, in the form DSH 0.1.7 reads it: `package.json.icon` (a manifest-relative SVG) and `locale/<language>.json` files whose `meta` block holds the title and description shown in the Plugins list. Both are exported (`./locale/*.json`) so the reader can resolve them; on earlier DSH versions the fields are simply ignored.
 
 ### When the install fails: two cases
