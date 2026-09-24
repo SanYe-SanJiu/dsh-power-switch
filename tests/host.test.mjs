@@ -12,6 +12,7 @@ import { describe, it } from 'node:test'
 import {
   DEFAULT_DELAY_MS,
   MAX_DELAY_MS,
+  SHORTCUT_MESSAGES,
   chooseShortcutAction,
   classifyShortcut,
   createConfigHandler,
@@ -28,6 +29,7 @@ import {
   readJsonBody,
   readShutdownRequest,
   relaunchPlan,
+  renderShortcutMessages,
   restartHelperEnv,
   schemasteryReferrers,
   shortcutVerdict,
@@ -1158,5 +1160,46 @@ describe('schemasteryReferrers', () => {
     assert.deepEqual(schemasteryReferrers({ hostEntry: '', self: 'file:///plugin/lib/index.js' }), ['file:///plugin/lib/index.js'])
     assert.deepEqual(schemasteryReferrers({ hostEntry: 'file:///x.js', self: 'file:///x.js' }), ['file:///x.js'])
     assert.deepEqual(schemasteryReferrers({}), [])
+  })
+})
+
+/**
+ * The translations the two `.vbs` helpers read. They cannot carry the text themselves
+ * (a `.vbs` is read as ANSI), so the host writes this file beside its copies of them.
+ */
+describe('shortcut messages', () => {
+  it('is one `key.language=text` line per message, with nothing a reader would trip on', () => {
+    const text = renderShortcutMessages()
+    const lines = text.trimEnd().split('\r\n')
+    const keys = Object.values(SHORTCUT_MESSAGES).reduce((total, table) => total + Object.keys(table).length, 0)
+    assert.equal(lines.length, keys, 'one line per message, or the reader loses the tail of one')
+    for (const line of lines) {
+      assert.match(line, /^[a-z0-9_]+\.[a-z]{2}=.+$/u, `unexpected line: ${line}`)
+      // The reader splits on "=" and takes the FIRST one, so a second "=" would truncate.
+      assert.equal(line.indexOf('=', line.indexOf('=') + 1), -1, `a second "=" would truncate: ${line}`)
+    }
+    assert.equal(lines.find((line) => line.startsWith('restored_title.zh=')), `restored_title.zh=${SHORTCUT_MESSAGES.zh.restored_title}`)
+  })
+
+  it('keeps the keys the scripts look up', () => {
+    // The scripts call Msg("key", "<English fallback>"). A key the table does not have
+    // is not an error at run time -- the English shows -- but a Chinese reader would
+    // silently get English, so the two halves are pinned together here.
+    const zh = new Set(Object.keys(SHORTCUT_MESSAGES.zh))
+    for (const key of [
+      'launch_failed', 'launcher_label', 'restored_title', 'restored_advice',
+      'nothing_title', 'nothing_advice', 'nothing_advice2', 'failed_title', 'failed_advice',
+      'undo_nothing', 'undo_looked', 'undo_unreadable', 'undo_noname', 'undo_delete_failed',
+      'undo_incomplete', 'undo_refused', 'undo_removed', 'undo_restored', 'undo_target', 'undo_arguments',
+    ]) {
+      assert.ok(zh.has(key), `the table must translate ${key}`)
+    }
+    assert.match(SHORTCUT_MESSAGES.zh.undo_incomplete, /%s/u, 'the missing-field message is a template')
+  })
+
+  it('does not duplicate the English fallback', () => {
+    // English lives at the call sites in the scripts, so there is one place to change
+    // it and no way for two copies to drift apart.
+    assert.equal(SHORTCUT_MESSAGES.en, undefined)
   })
 })

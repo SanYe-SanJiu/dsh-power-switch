@@ -28,16 +28,16 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ```powershell
 # ① 已安装 dsh 命令（npm 全局安装或桌面版）
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
 
 # ② 从源码检出运行，且检出已构建（存在 apps/cli/lib/bin.js）
 #    需在检出根目录执行
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
 
 # ③ 从源码检出运行，未构建或希望直接跑 TypeScript 源码
 #    需在检出根目录执行；官方开发文档（docs/user/develop/basic/publish.md）
 #    对源码检出的写法就是这条
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
 ```
 
 三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。
@@ -88,7 +88,7 @@ dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minim
 ### 安装校验与卸载
 
 - 校验：profile 的 `dsh.profile.bundles` 中包含本插件，且 `node_modules\dsh-power-switch` 为普通目录（本地 `link:` 安装为符号链接或 junction）。
-- 卸载：若当前处于应用窗口模式（快捷方式已被接管），先在卡片中切回普通标签页以还原原有启动方式，再执行 `dsh plugin --profile web remove dsh-power-switch`。若已在接管状态下卸载了插件，双击状态目录中的 `restore-shortcut.vbs` 即可：该脚本每次启动都会复制到状态目录，正是为了在包消失后仍可用，它会依据 `shortcut-backup.txt` 还原原快捷方式。在接管状态下卸载，会让快捷方式指向本包自己的启动器——而它已不存在。
+- 卸载：`dsh plugin --profile web remove dsh-power-switch`。桌面快捷方式不依赖包，因此无需先做任何还原——但若当前是应用窗口模式，想让原有启动方式立刻回来，就先在卡片里切回普通标签页再卸载。否则下一次双击图标就会自动完成：快捷方式所指的副本发现包已不在，会把原快捷方式放回去并弹窗说明。状态目录中的 `restore-shortcut.vbs` 是同一件事的手动入口。
 - 切换回本地检出：先卸载，再执行 `dsh plugin --profile web add link:<本包检出的绝对路径>`；两步均建议附带上述一次性开关。
 - 同一 profile 中不要同时安装 GitHub 版本与本地 `link:` 版本：包名相同，后安装者会替换先安装者。
 
@@ -150,7 +150,20 @@ DSH 0.1.7 更换了插件设置模型：`ctx.settings` 变成生成式表单服�
 
 ### 桌面快捷方式
 
-切换到应用窗口时接管已有的 DSH 快捷方式（不存在时新建 `DSH 启动器`），切回普通标签页时还原为原有启动方式。接管前的目标、参数、图标与描述记录在状态目录的 `shortcut-backup.txt` 中，可随时还原。每次启动还会把修复脚本的副本放到该记录旁边，因此即使包已被卸载，双击它仍能还原快捷方式——卸载插件不该以损失一个可用的快捷方式为代价。
+切换到应用窗口时接管已有的 DSH 快捷方式（不存在时新建 `DSH 启动器`），切回普通标签页时还原为原有启动方式。接管前的目标、参数、图标与描述记录在状态目录的 `shortcut-backup.txt` 中，可随时还原。
+
+快捷方式指向的**不是包内的启动器，而是状态目录里的副本** `shortcut-launch.vbs`——它每次启动都会写在那里，与上述记录和 `restore-shortcut.vbs` 放在一起。一个"插件一卸载就失效"的图标不值得放到桌面上，所以图标所指向的文件必须是卸载动不了的那个。双击它时：
+
+1. **插件还在**——harness home 下的某个 profile **在其清单里仍列着它**（`<profile>\package.json` 的 `dsh.profile.bundles`，即宿主加载插件的那个列表），并且该 profile 里存在 `<profile>\node_modules\dsh-power-switch\scripts\launch-dsh.vbs`。副本把本次启动收到的参数原样交给那个启动器、等待并回传其退出码。实际启动路径仍是 `launch-dsh.mjs`（外壳 `launch-dsh.vbs`），因此正常启动毫无变化；旧版本接管过的图标也会在下次启动时被改指到这个副本。
+2. **插件已不在**——没有任何 profile 再列着它，于是通过 `restore-shortcut.vbs` 重放记录：快捷方式回到本插件从未碰过它的样子（若是本插件新建的则删除），并弹出一个对话框说明。再双击一次，就按你原来的方式启动 DSH。
+
+判定以**清单**为准，既不是"记录下来的那条路径"，也不是"那个目录还在不在"——这两点都是实测出来的，不是假设。`link:` 安装被卸载时，清单会被改写，但 `node_modules` 里的 junction 会留下来；因此"启动器文件仍能解析"并不能证明插件还装着，把它当成证据正是"图标继续启动一个已卸载的插件、还原永远不发生"的成因。早期版本写下的记录路径有同样的失效方式，所以启动时会把它删掉。
+
+本次启动究竟属于哪个 harness home，**靠查而不是靠选定**：环境变量 `DSH_HOME`、快捷方式携带的 `--home`、默认的 `~/.dsh` 会逐个搜索，看谁的 profile 清单里仍列着本插件，找到的那个即为准，并且**导出的也是它**，这样外壳读到的状态目录与被执行的启动器属于同一个 home。因此"快捷方式建好之后 `DSH_HOME` 又变了"不会让已安装的插件看起来像被卸载，图标也就不会在插件还在时装作插件已消失。
+
+这一层里没有任何写死的路径。`shortcut-launch.vbs` 用的是自身所在目录、上面那个 home、DSH 的 `profiles` 目录（CLI 解析 `--profile` 用的同一个常量）以及 `<profile>\node_modules\<包名>`——即 pnpm 放置直接依赖、且 DSH 明确说明"pnpm 管理的条目保持权威"的位置。`restore-shortcut.vbs` 用的是自身所在目录，其次 `%DSH_HOME%`，再其次 `%USERPROFILE%\.dsh`；它改写的 `.lnk` 就是记录里那一个。`make-shortcut.vbs` 向 shell 询问 `Desktop` 而不是自行拼接（因此重定向过的、非英文的桌面同样可用），写入的目标是 `%SystemRoot%\System32\wscript.exe` 并带回退的裸文件名。这些全部在运行时推导，任何用户名、盘符或目录下的安装行为一致。
+
+这些对话框**用使用者所用 Windows 的语言显示**——因为它就是一个 Windows 对话框：脚本读取 `HKCU\Control Panel\International\LocaleName`，读不到就退回英文；`DSH_POWER_SWITCH_LANG=zh|en` 可覆盖两者。译文放在状态目录的 `shortcut-messages.txt` 里，而不是脚本内部，因为脚本存不下它：wscript 按 ANSI 读取 `.vbs`，中文写进去会变成乱码；而把脚本改成 UTF-16 又会让它在版本库里变成无法审阅的二进制。表里**不重复英文**：英文就是各个调用点里写着的文本，也是键或整个文件缺失时的回退。
 
 需要这一层的原因：`dsh web` 将 URL 交给默认浏览器，因此始终打开标签页；它没有应用窗口选项，且该交接由使用清空环境变量的平台 opener 启动，插件无法拦截。因此「下次启动的窗口形态」只能由启动 dsh 的一方决定，即本包提供的启动器 `scripts/launch-dsh.mjs`（外壳 `launch-dsh.vbs`）：读取设置中的模式 → 未运行服务时按记录的启动命令启动 → 等待宿主输出 token → 按模式打开窗口。
 
@@ -184,7 +197,9 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 | `node-path.txt` | 宿主当前使用的 node.exe 路径；两个 `.vbs` 外壳读取该文件，因此经 nvm/fnm/volta 或应用商店安装的 Node 也可由快捷方式启动 |
 | `dsh-web.<时间戳>.log` | 由本插件启动的各次宿主的 stdout（包含该次运行的 token URL） |
 | `shortcut-backup.txt` | 接管前的原始快捷方式，用于还原 |
-| `restore-shortcut.vbs` | 修复脚本的副本，每次启动时写入。双击后依据 `shortcut-backup.txt` 还原快捷方式并删除该记录；包被卸载后接管过的快捷方式仍可恢复，靠的就是它 |
+| `shortcut-launch.vbs` | 被接管的快捷方式实际指向的启动器，每次启动刷新。仍有 profile 承载插件时，把启动交给该 profile 的包内启动器；不再有时依据记录还原原快捷方式。放在包外正是关键 |
+| `shortcut-messages.txt` | 两个 `.vbs` 辅助脚本的对话框文本（英文之外的语言），格式为 `键.语言=文本`。UTF-16：`.vbs` 按 ANSI 读取，中文写进脚本会变成乱码 |
+| `restore-shortcut.vbs` | 修复脚本的副本，每次启动时写入。双击后依据 `shortcut-backup.txt` 还原快捷方式并删除该记录；`shortcut-launch.vbs` 以 `/quiet` 调用它并自行报告结果 |
 | `shortcut-result.txt` | 最近一次快捷方式操作的原始结果 |
 
 状态文件置于包外的原因：包可能位于只读存储中；且日志包含认证 token URL 与本机路径，写入包目录等同于写入版本库。
@@ -226,7 +241,7 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 
 有两条边界应当明确写出，而不是等人踩到：
 
-- **`boot.json` 是一条信任边界。** 重启链路会**原样重放**运行中宿主为自己记录的命令行——这正是设计本身，也是它从不重建安装路径的原因。因此，任何能写入状态目录的人都能让该命令以你的权限执行。这不是权限提升（`settings.yaml`、profile 的插件清单，以及宿主读取的任何其它文件同理），而这恰恰是状态目录位于用户配置文件内、绝不放进包目录的原因。请把"可写 `$DSH_HOME`"视同"可以你的身份执行代码"。状态目录中的修复脚本同属这条边界：它每次启动都从包内刷新，且本就设计为供双击执行，因此能写入状态目录的人可以在此名下放入别的东西。它自身只会依据记录字段改写 `.lnk`，但仍应按"用户配置文件里的可执行文件"对待。
+- **`boot.json` 是一条信任边界。** 重启链路会**原样重放**运行中宿主为自己记录的命令行——这正是设计本身，也是它从不重建安装路径的原因。因此，任何能写入状态目录的人都能让该命令以你的权限执行。这不是权限提升（`settings.yaml`、profile 的插件清单，以及宿主读取的任何其它文件同理），而这恰恰是状态目录位于用户配置文件内、绝不放进包目录的原因。请把"可写 `$DSH_HOME`"视同"可以你的身份执行代码"。还有两个文件同属这条边界：`shortcut-launch.vbs` 与 `restore-shortcut.vbs` 每次启动都从包内刷新，且本就设计为被执行（桌面快捷方式启动的就是前者），因此能写入状态目录的人可以在这两个名下放入别的东西——启动副本只会启动"某个 profile 解析出的那个启动器"，修复副本只会依据记录字段改写 `.lnk`，但仍应按"用户配置文件里的可执行文件"对待。
 - **带认证的 `?token=…` URL 是本地访问凭据。** 它只写在两处，都在 `$DSH_HOME/storages/dsh-power-switch/` 下：宿主自身的 stdout 日志（`dsh-web.<时间戳>.log`，替代进程据此确认服务进程）与 `token-url.txt`。任何会重复它的诊断行都脱敏为 `?token=***`——包括桌面快捷方式写入 `%TEMP%` 的外壳日志。请勿将这两个文件贴到公开场合。
 
 ## 开发

@@ -28,17 +28,17 @@ App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), 
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
 
 # ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
 #    run this from the checkout root
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
 
 # ③ running from a source checkout that is not built, or you prefer the TypeScript
 #    sources — this is the form the upstream development documentation
 #    (docs/user/develop/basic/publish.md) gives for a source checkout
 #    run this from the checkout root
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
 ```
 
 All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
@@ -92,7 +92,7 @@ Restart DSH once after installing, then open **Settings -> Plugins**: a card lab
 ### Verifying and uninstalling
 
 - Verify: the profile's `dsh.profile.bundles` contains this plugin, and `node_modules\dsh-power-switch` is an ordinary directory (a local `link:` install is a symbolic link or junction).
-- Uninstall: if the shortcut is currently adopted (the mode is app window), switch back to the normal tab in the card first, so the original launch method is restored; then run `dsh plugin --profile web remove dsh-power-switch`. Should the package be removed while the shortcut is still adopted, double-click `restore-shortcut.vbs` in the state directory — it is copied there at every boot precisely so it outlives the package, and it puts the original shortcut back from `shortcut-backup.txt`. Uninstalling while the shortcut is adopted leaves that shortcut pointing at the package's own launcher, which no longer exists.
+- Uninstall: `dsh plugin --profile web remove dsh-power-switch`. The desktop shortcut does not depend on the package, so nothing has to be undone first — but if the mode is app window, switch back to the normal tab in the card before removing it if you want your original launch method back immediately. Otherwise the next double-click of the icon does it: the copy the shortcut points at notices the package is gone, puts the original shortcut back, and says so. `restore-shortcut.vbs` in the state directory does the same thing by hand.
 - Return to a local checkout: uninstall first, then run `dsh plugin --profile web add link:<absolute path to this checkout>`; both steps should carry the one-shot flag above.
 - Do not install the GitHub build and a local `link:` build into the same profile: the package name is identical, so the later install replaces the earlier one.
 
@@ -154,7 +154,20 @@ In any of them the shutdown feature is unaffected and the setting has already be
 
 ### Desktop shortcut
 
-Switching to the app window adopts the existing DSH shortcut, or creates `DSH 启动器` when none exists; switching back to a normal tab restores the original launch method. The original target, arguments, icon and description are recorded in `shortcut-backup.txt` in the state directory, so the change can be undone at any time. A copy of the repair script is placed next to that record at every boot, so an adopted shortcut can also be recovered by double-clicking it after the package is gone — uninstalling the plugin must never cost you a working shortcut.
+Switching to the app window adopts the existing DSH shortcut, or creates `DSH 启动器` when none exists; switching back to a normal tab restores the original launch method. The original target, arguments, icon and description are recorded in `shortcut-backup.txt` in the state directory, so the change can be undone at any time.
+
+What the shortcut points at is **a copy of the launcher in the state directory**, not the packaged one: `shortcut-launch.vbs`, written there on every boot beside that record and beside `restore-shortcut.vbs`. An icon that stops working the moment its plugin is uninstalled is not worth placing, so the file the icon names is one the uninstaller cannot delete. What it does with a double-click:
+
+1. **The plugin is installed** — a profile under the harness home still **names it in its manifest** (`dsh.profile.bundles` in `<profile>\package.json`, the list the host loads plugins from) *and* carries `<profile>\node_modules\dsh-power-switch\scripts\launch-dsh.vbs`. The copy hands that launcher the arguments it arrived with, waits, and forwards its exit code. The launch path is still `launch-dsh.mjs` through `launch-dsh.vbs`, so a normal start is unchanged; a boot re-points an icon adopted by an earlier version at this copy.
+2. **The plugin is gone** — no profile names it any more, so it replays the record through `restore-shortcut.vbs`: the shortcut is the one you had before this plugin ever touched it (or is removed, if this plugin created it), and one dialog says so. The next double-click starts DSH exactly as it used to.
+
+The manifest is the authority rather than a recorded path **or a surviving directory**, and both halves of that were measured rather than assumed. Uninstalling a `link:` install rewrites the manifest but leaves the junction in `node_modules`; a launcher file that still resolves is therefore not evidence that the plugin is installed, and treating it as evidence is exactly how an icon keeps launching a plugin that is gone while the restore never happens. The recorded path that an earlier build wrote has the same failure mode, which is why a boot deletes it.
+
+Which harness home the launch means is **answered by looking, not by picking one**: the environment's `DSH_HOME`, the `--home` the shortcut carries and the default `~/.dsh` are each searched for a profile whose manifest names the plugin, and the home that has it wins — and is the one exported to the launcher, so the wrapper reads the state directory belonging to the launcher it was handed. A `DSH_HOME` that changed after the shortcut was created therefore cannot make an installed plugin look uninstalled, and an icon cannot decide to put itself back while the plugin is still there.
+
+Nothing in this layer is a fixed path. `shortcut-launch.vbs` uses its own folder, the harness home above, DSH's `profiles` directory (the same constant the CLI resolves `--profile` against) and `<profile>\node_modules\<package>` — where pnpm puts a direct dependency, and where DSH says pnpm-managed entries stay authoritative. `restore-shortcut.vbs` uses its own folder, then `%DSH_HOME%`, then `%USERPROFILE%\.dsh`, and the `.lnk` it rewrites is the one named in the record. `make-shortcut.vbs` asks the shell for `Desktop` rather than composing it, which is why a redirected or non-English desktop works, and names `%SystemRoot%\System32\wscript.exe` with a bare-name fallback. Every one of those is derived at run time, so an install under any user name, drive or directory behaves the same.
+
+Those dialogs are shown **in the language of the Windows the person is using**, because this is a Windows dialog: the scripts read `HKCU\Control Panel\International\LocaleName`, falling back to English, and `DSH_POWER_SWITCH_LANG=zh|en` overrides both. The translations live in `shortcut-messages.txt` in the state directory rather than in the scripts, which cannot carry them: wscript reads a `.vbs` as ANSI, so Chinese written into one arrives as mojibake — and reading the file as UTF-16 instead would make it a binary blob in the repository with no reviewable diff. English is not duplicated into the table; it is the text compiled into each call site and the fallback whenever a key or the whole file is missing.
 
 Why this layer is necessary: `dsh web` hands its URL to the default browser, so it always opens a tab. It has no app-window option, and that hand-off runs a platform opener with a scrubbed environment, so no plugin can intercept it. The window shape for the next launch can therefore only be chosen by whatever launches dsh — which is this package's launcher, `scripts/launch-dsh.mjs` (wrapped by `launch-dsh.vbs`). It reads the stored mode, starts the host with the recorded launch command when no host is running, waits for the token the host prints, and opens the window in that mode.
 
@@ -189,7 +202,9 @@ Runtime state lives in **`$DSH_HOME/storages/dsh-power-switch/`**, never inside 
 | `node-path.txt` | The node.exe path the host is running on; both `.vbs` wrappers read it, so a Node installed through nvm/fnm/volta or an app store can still launch DSH from the shortcut |
 | `dsh-web.<stamp>.log` | The stdout of each host this plugin started, including that run's token URL |
 | `shortcut-backup.txt` | The original shortcut recorded before it was adopted, for restoring it |
-| `restore-shortcut.vbs` | A copy of the repair script, made at every boot. Double-clicking it restores the shortcut from `shortcut-backup.txt` and then deletes that record; it is the reason an adopted shortcut is still recoverable after the package itself is gone |
+| `shortcut-launch.vbs` | The launcher the adopted shortcut points at, refreshed at every boot. While a profile carries the plugin it hands the launch to that profile's packaged launcher; once none does it restores the original shortcut from the record. Being outside the package is the point |
+| `shortcut-messages.txt` | The dialogs the two `.vbs` helpers show, in the languages beyond the English compiled into them, as `key.language=text` lines. UTF-16, because a `.vbs` is read as ANSI and Chinese written into one would land on screen as mojibake |
+| `restore-shortcut.vbs` | A copy of the repair script, made at every boot. Double-clicking it restores the shortcut from `shortcut-backup.txt` and then deletes that record; `shortcut-launch.vbs` runs it with `/quiet` and reports the result itself |
 | `shortcut-result.txt` | The raw result of the most recent shortcut operation |
 
 State is kept outside the package for two reasons: the package may sit in a read-only store, and the log contains authenticated token URLs and local paths, so a log inside the package would be a log inside the repository.
@@ -231,7 +246,7 @@ The plugin reads no credentials, makes no network requests and never touches ses
 
 Two boundaries are worth stating plainly rather than leaving to be discovered:
 
-- **`boot.json` is a trust boundary.** The restart replays the command line the running host recorded for itself, verbatim — that is the whole design, and it is why no installation path is ever reconstructed. Anyone who can write the state directory can therefore have that command executed with your privileges. That is not a privilege escalation (the same is true of `settings.yaml`, the profile's plugin list, and every other file the harness reads), and it is exactly why the state directory lives inside your user profile and never inside the package. Treat write access to `$DSH_HOME` as equivalent to running code as yourself. The repair script in the state directory belongs to the same boundary: it is refreshed from the package at every boot and is meant to be double-clicked, so a state-directory writer could put something else under that name. It only ever edits a `.lnk` from the recorded fields, but treat it like any other executable in your profile.
+- **`boot.json` is a trust boundary.** The restart replays the command line the running host recorded for itself, verbatim — that is the whole design, and it is why no installation path is ever reconstructed. Anyone who can write the state directory can therefore have that command executed with your privileges. That is not a privilege escalation (the same is true of `settings.yaml`, the profile's plugin list, and every other file the harness reads), and it is exactly why the state directory lives inside your user profile and never inside the package. Treat write access to `$DSH_HOME` as equivalent to running code as yourself. Two more files sit on the same boundary. `shortcut-launch.vbs` and `restore-shortcut.vbs` are refreshed from the package at every boot and are meant to be run — the desktop shortcut itself starts the first one — so a state-directory writer could put something else under those names; the launch copy only ever starts the launcher a profile resolves to, and the repair copy only ever edits a `.lnk` from the recorded fields, but treat both like any other executable in your profile.
 - **The authenticated `?token=…` URL is a local access credential.** It is written in exactly two places, both under `$DSH_HOME/storages/dsh-power-switch/`: the host's own stdout log (`dsh-web.<stamp>.log`), which is how a replacement host is identified, and `token-url.txt`. Every diagnostic line that would repeat it is redacted to `?token=***` — including the wrapper log in `%TEMP%`, which a desktop shortcut writes. Do not paste those two files anywhere public.
 
 ## Development

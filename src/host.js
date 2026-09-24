@@ -493,6 +493,62 @@ export function createRestartHandler(deps) {
 export const SHORTCUT_ACTIONS = ['scan', 'install', 'restore']
 
 /**
+ * The dialogs the two `.vbs` helpers show, in languages other than the English that
+ * is compiled into them.
+ *
+ * The scripts cannot carry this text: wscript reads a `.vbs` as ANSI, so Chinese
+ * written into one lands on screen as mojibake -- and reading the file as UTF-16
+ * instead would make it a binary blob in the repository, with no reviewable diff. So
+ * the host writes these lines into `shortcut-messages.txt` in the state directory on
+ * every boot, next to the two copies it writes, in the same UTF-16-with-BOM form as
+ * the shortcut record; the scripts look a key up as `<key>.<language>` and keep their
+ * own English when there is no entry.
+ *
+ * English is deliberately NOT duplicated here. It is the fallback compiled into each
+ * call site, so there is one place to change it and the scripts stay readable.
+ */
+export const SHORTCUT_MESSAGES = Object.freeze({
+  zh: Object.freeze({
+    launch_failed: '无法启动 DSH 启动器。',
+    launcher_label: '启动器：',
+    restored_title: '改动这个快捷方式的插件已经卸载，原有的启动方式已放回。',
+    restored_advice: '再双击一次图标，即可按你原来的方式启动 DSH。',
+    nothing_title: '改动这个快捷方式的插件已经卸载，但没有找到还原记录，因此没有可放回的内容。',
+    nothing_advice: '这个快捷方式目前启动的是：',
+    nothing_advice2: '你可以删除它，或者把它指向你想要的 DSH 启动方式。',
+    failed_title: '改动这个快捷方式的插件已经卸载，但原快捷方式没能放回。',
+    failed_advice: '请手动运行这个文件：',
+    undo_nothing: '没有可还原的内容：未找到快捷方式记录。',
+    undo_looked: '已查找：',
+    undo_unreadable: '无法读取记录：',
+    undo_noname: '记录里没有指定快捷方式：',
+    undo_delete_failed: '无法删除本插件创建的快捷方式：',
+    undo_incomplete: '记录不完整（缺少 %s）：',
+    undo_refused: '系统拒绝保存这个快捷方式：',
+    undo_removed: '已删除本插件创建的快捷方式：',
+    undo_restored: '已还原原快捷方式：',
+    undo_target: '目标：',
+    undo_arguments: '参数：',
+  }),
+})
+
+/**
+ * Render the message table as the `key.language=text` lines the scripts read.
+ *
+ * One line per message, because the reader splits on "=" and takes the first one; a
+ * value containing a line break would silently lose its tail, which is why the tests
+ * assert that none of them has one.
+ * @returns the file's contents, without a BOM.
+ */
+export function renderShortcutMessages() {
+  const lines = []
+  for (const [language, table] of Object.entries(SHORTCUT_MESSAGES)) {
+    for (const [key, text] of Object.entries(table)) lines.push(`${key}.${language}=${text}`)
+  }
+  return `${lines.join('\r\n')}\r\n`
+}
+
+/**
  * Build the route that checks, installs or restores the desktop shortcut.
  *
  * The card sends exactly one thing: which of the three operations it wants. It

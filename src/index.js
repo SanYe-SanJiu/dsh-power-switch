@@ -12,7 +12,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, copyFileSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -47,6 +47,7 @@ import {
   chooseShortcutAction,
   parseShortcutResult,
   relaunchPlan,
+  renderShortcutMessages,
   resolveConfig,
   restartHelperEnv,
   schemasteryReferrers,
@@ -260,24 +261,63 @@ export function apply(ctx, config = {}, timings = {}) {
   }
 
   /**
-   * Keep the shortcut-repair script where removing the package cannot reach it.
+   * Keep the pieces that a removed package can no longer provide.
    *
-   * Adopting the desktop icon is reversible, but the tool that reverses it used to
-   * live inside the package — so uninstalling the plugin left the shortcut pointing at
-   * a launcher that no longer existed, and the desktop icon could not start DSH at
-   * all. The record of the original has always been written to the state directory;
-   * this puts the replayer beside it, on every boot (a few kilobytes, idempotent, and
-   * refreshed so the copy tracks the installed version).
+   * Adopting the desktop icon points it at this package's launcher, so uninstalling
+   * the plugin used to leave a desktop icon that could not start DSH at all -- and
+   * the record of the original, plus the tool that replays it, lived in the very
+   * package being removed. Both are therefore kept in the state directory, written on
+   * every boot (a few kilobytes, idempotent, refreshed so they track the installed
+   * version):
+   *
+   *  - `shortcut-launch.vbs`, which the adopted shortcut points at. While a profile
+   *    still carries the plugin it hands the launch to that profile's packaged
+   *    launcher, so a normal start is unchanged; once none does, it puts the original
+   *    shortcut back and says so;
+   *  - `restore-shortcut.vbs`, the replayer, also reachable by double-clicking it;
+   *  - `shortcut-messages.txt`, the dialogs those two show, in the languages beyond
+   *    the English compiled into them. They cannot carry that text themselves: a
+   *    `.vbs` is read as ANSI, and a UTF-16 script file would be a binary blob in the
+   *    repository.
+   *
+   * What the copy must NOT be given is a recorded path back into this package. An
+   * earlier build wrote one, and it answered "is the plugin installed?" wrongly for a
+   * `link:` install: `dsh plugin remove` deletes the profile entry, not the checkout
+   * the path pointed at, so the shortcut would have gone on launching a plugin that
+   * was gone -- and the original would never have come back. The profile is the
+   * authority. A stale record from that build is deleted below so it cannot come back
+   * to life.
    */
   try {
-    copyFileSync(
-      join(WORKSPACE_ROOT, 'scripts', 'restore-shortcut.vbs'),
-      // Resolved HERE rather than from the module-load snapshot: this has to land in
-      // the harness home the running host actually uses.
-      join(ensureStateDir(), 'restore-shortcut.vbs'),
-    )
+    // Resolved HERE rather than from the module-load snapshot: these have to land in
+    // the harness home the running host actually uses.
+    const state = ensureStateDir()
+    for (const name of ['shortcut-launch.vbs', 'restore-shortcut.vbs']) {
+      copyFileSync(join(WORKSPACE_ROOT, 'scripts', name), join(state, name))
+    }
+    // UTF-16 with a BOM, like the shortcut record: the reader opens it as Unicode, and
+    // a translated string is not necessarily ASCII.
+    writeFileSync(join(state, 'shortcut-messages.txt'), `\ufeff${renderShortcutMessages()}`, 'utf16le')
+    rmSync(join(state, 'launcher-path.txt'), { force: true })
   } catch (error) {
-    note(`could not keep a shortcut-repair copy outside the package (${String(error?.message ?? error)})`)
+    note(`could not keep the shortcut helpers outside the package (${String(error?.message ?? error)})`)
+  }
+
+  // An icon this plugin adopted in an earlier version still points INSIDE the
+  // package, which is the arrangement that breaks on uninstall. Re-point it at the
+  // durable copy above, without waiting for the card to be touched: the record says
+  // which shortcut is ours, so nothing has to be scanned or guessed.
+  try {
+    const owned = recordedShortcut()
+    if (owned !== null && existsSync(owned)) {
+      const { outcome, reported } = callShortcutHelper('apply', owned)
+      const failure = shortcutVerdict('apply', outcome, reported, note)
+      note(failure === null
+        ? `shortcut: re-pointed the adopted icon at the durable launcher (${owned})`
+        : `shortcut: could not re-point the adopted icon (${failure.error})`)
+    }
+  } catch (error) {
+    note(`shortcut: could not re-point the adopted icon (${String(error?.message ?? error)})`)
   }
 
   /**
@@ -485,11 +525,28 @@ const STATE_DIR = (() => {
   }
 })()
 
-/** Where the original shortcut is recorded, so the change can be undone. */
-const SHORTCUT_BACKUP = join(STATE_DIR, 'shortcut-backup.txt')
+/**
+ * Where the original shortcut is recorded, so the change can be undone.
+ *
+ * Resolved per call rather than once at module load, like everything else the
+ * shortcut layer writes: these paths have to follow the harness home the RUNNING
+ * host uses, and a boot that re-points an adopted icon must not read a record from,
+ * or write one to, a different installation.
+ */
+const shortcutBackup = () => join(ensureStateDir(), 'shortcut-backup.txt')
 
 /** Where the helper writes what it did; read back as UTF-16. */
-const SHORTCUT_RESULT = join(STATE_DIR, 'shortcut-result.txt')
+const shortcutResult = () => join(ensureStateDir(), 'shortcut-result.txt')
+
+/**
+ * The launcher the adopted shortcut points at.
+ *
+ * NOT the packaged wrapper: this is the copy the host keeps in the state directory,
+ * so uninstalling the plugin cannot leave the desktop icon pointing at a file that
+ * no longer exists. While the package is installed that copy hands the launch to the
+ * packaged wrapper -- see `scripts/shortcut-launch.vbs`.
+ */
+const shortcutLauncher = () => join(ensureStateDir(), 'shortcut-launch.vbs')
 
 /**
  * Run the mechanical helper once and read what it reported.
@@ -509,7 +566,9 @@ const SHORTCUT_RESULT = join(STATE_DIR, 'shortcut-result.txt')
  * @returns `{ outcome, reported }`.
  */
 function callShortcutHelper(action, targetLnk) {
-  const launcher = join(WORKSPACE_ROOT, 'scripts', 'launch-dsh.vbs')
+  // The DUPLICABLE launcher, not the packaged one: the shortcut must keep working
+  // after the package is removed, so it points at the copy the host keeps outside it.
+  const launcher = shortcutLauncher()
   const helper = join(WORKSPACE_ROOT, 'scripts', 'make-shortcut.vbs')
   // The desktop-shortcut feature is Windows Script Host plus `.lnk`, and the
   // manifest declares `os: win32` to match. This is the belt to those braces:
@@ -525,7 +584,7 @@ function callShortcutHelper(action, targetLnk) {
   }
   // A stale result would otherwise be read back as this run's answer.
   try {
-    rmSync(SHORTCUT_RESULT, { force: true })
+    rmSync(shortcutResult(), { force: true })
   } catch {
     // A result file that cannot be removed only costs us a fresh answer.
   }
@@ -533,7 +592,7 @@ function callShortcutHelper(action, targetLnk) {
   // necessarily carry DSH_HOME, and a launcher started from a shortcut without it
   // reads a different state directory, finds no boot record and refuses to start
   // anything -- a shortcut that looks like it does nothing.
-  const args = ['//nologo', helper, action, launcher, dshHome(), SHORTCUT_BACKUP, SHORTCUT_RESULT, SHORTCUT_NAME, SHORTCUT_DESCRIPTION]
+  const args = ['//nologo', helper, action, launcher, dshHome(), shortcutBackup(), shortcutResult(), SHORTCUT_NAME, SHORTCUT_DESCRIPTION]
   if (targetLnk !== undefined) args.push(targetLnk)
   const outcome = spawnSync('cscript.exe', args, { stdio: 'ignore', windowsHide: true })
   return { outcome, reported: readShortcutResult() }
@@ -542,7 +601,7 @@ function callShortcutHelper(action, targetLnk) {
 /** The shortcut this plugin's previous run took over or created, if any. */
 function recordedShortcut() {
   try {
-    return parseShortcutResult(readFileSync(SHORTCUT_BACKUP, 'utf16le')).lnk ?? null
+    return parseShortcutResult(readFileSync(shortcutBackup(), 'utf16le')).lnk ?? null
   } catch {
     return null
   }
@@ -565,11 +624,11 @@ function recordedShortcut() {
  * @returns the answer the card shows.
  */
 function runShortcutHelper(action, note) {
-  const launcher = join(WORKSPACE_ROOT, 'scripts', 'launch-dsh.vbs')
+  const launcher = shortcutLauncher()
   const helper = join(WORKSPACE_ROOT, 'scripts', 'make-shortcut.vbs')
   if (!existsSync(helper)) return { ok: false, error: `the shortcut helper is missing: ${helper}` }
   if (action !== 'scan' && !existsSync(launcher)) {
-    return { ok: false, error: `the packaged launcher is missing: ${launcher}` }
+    return { ok: false, error: `the launcher copy this plugin keeps outside the package is missing: ${launcher}` }
   }
 
   if (action === 'restore') {
@@ -658,7 +717,7 @@ function runShortcutHelper(action, note) {
  */
 function readShortcutResult() {
   try {
-    return { ...parseShortcutResult(readFileSync(SHORTCUT_RESULT, 'utf16le')), ran: true }
+    return { ...parseShortcutResult(readFileSync(shortcutResult(), 'utf16le')), ran: true }
   } catch {
     return { entries: [], candidates: [], others: 0, ran: false }
   }

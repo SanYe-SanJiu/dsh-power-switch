@@ -167,21 +167,43 @@ describe('host plugin wiring', () => {
     assert.equal(readRecordedLaunchMode(), 'app', 'the row default must not clobber a recorded choice')
   })
 
-  it('keeps a shortcut-repair copy where removing the package cannot reach it', async () => {
-    // Adopting the desktop icon points the shortcut at a launcher INSIDE the package,
-    // so removing the package used to leave a desktop icon that could not start DSH at
-    // all. The record of the original always lived in the state directory; the tool
-    // that replays it now does too, refreshed on every boot.
+  it('keeps the shortcut helpers where removing the package cannot reach them', async () => {
+    // The adopted icon points at a copy of the launcher in the state directory, so
+    // removing the package cannot leave a desktop icon that starts nothing. The copy
+    // has to be the packaged file byte for byte.
     const { ctx } = makeContext()
     apply(ctx, {})
     await new Promise((resolve) => { setTimeout(resolve, 40) })
-    const copied = join(stateDir(), 'restore-shortcut.vbs')
-    assert.ok(existsSync(copied), 'the repair script must be kept outside the package')
-    assert.equal(
-      readFileSync(copied, 'utf8'),
-      readFileSync(new URL('../scripts/restore-shortcut.vbs', import.meta.url), 'utf8'),
-      'the copy must be the packaged script, so it can be trusted after an uninstall',
-    )
+    for (const name of ['restore-shortcut.vbs', 'shortcut-launch.vbs']) {
+      const copied = join(stateDir(), name)
+      assert.ok(existsSync(copied), `${name} must be kept outside the package`)
+      assert.equal(
+        readFileSync(copied, 'utf8'),
+        readFileSync(new URL(`../scripts/${name}`, import.meta.url), 'utf8'),
+        `${name} must be the packaged script, so it can be trusted after an uninstall`,
+      )
+    }
+    // No recorded path back into the package: whether the plugin is still installed is
+    // answered by the profile that carries it, and a stale record would answer that
+    // wrongly for a removed `link:` install.
+    assert.equal(existsSync(join(stateDir(), 'launcher-path.txt')), false, 'no recorded launcher path may be left behind')
+    // The dialogs those scripts show, in the languages they cannot carry themselves:
+    // a `.vbs` is read as ANSI, so this file is UTF-16 like the shortcut record.
+    const messages = readFileSync(join(stateDir(), 'shortcut-messages.txt'), 'utf16le').replace(/^\ufeff/u, '')
+    assert.match(messages, /^restored_title\.zh=.+$/mu, 'the restored-shortcut dialog must have a translation')
+    assert.match(messages, /^undo_incomplete\.zh=.+%s.+$/mu, 'the missing-field dialog is a template')
+  })
+
+  it('leaves the desktop alone when no shortcut was ever adopted', async () => {
+    // The boot that re-points an adopted icon must be driven by the RECORD, in the
+    // state directory this host is actually using. Anything else would have this test
+    // suite rewriting the real machine's desktop while it runs.
+    const { ctx } = makeContext()
+    writeRecordedLaunchMode('app')
+    apply(ctx, {})
+    await new Promise((resolve) => { setTimeout(resolve, 40) })
+    assert.equal(existsSync(join(stateDir(), 'shortcut-backup.txt')), false, 'nothing may be adopted here')
+    assert.equal(existsSync(join(stateDir(), 'shortcut-result.txt')), false, 'the helper must not have run at all')
   })
 
   it('reports the mode it will actually launch with, on a host that generates no form', async () => {

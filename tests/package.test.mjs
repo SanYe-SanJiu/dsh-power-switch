@@ -549,7 +549,7 @@ describe('desktop shortcut placement', () => {
 
   it('receives the arguments in the order the helper reads them', async () => {
     const host = await readFile(at('src/index.js'), 'utf8')
-    assert.match(host, /'\/\/nologo', helper, action, launcher, dshHome\(\), SHORTCUT_BACKUP, SHORTCUT_RESULT, SHORTCUT_NAME, SHORTCUT_DESCRIPTION/)
+    assert.match(host, /'\/\/nologo', helper, action, launcher, dshHome\(\), shortcutBackup\(\), shortcutResult\(\), SHORTCUT_NAME, SHORTCUT_DESCRIPTION/)
     // The harness home is one of them, because a shortcut that does not carry it
     // is at the mercy of whatever environment Explorer happens to hold.
     assert.match(host, /\bdshHome\b/)
@@ -561,8 +561,83 @@ describe('desktop shortcut placement', () => {
     assert.match(host, /stdio: 'ignore'/)
     assert.match(host, /cscript\.exe/)
     // Both files carry a desktop path, so both must be read as UTF-16.
-    assert.match(host, /readFileSync\(SHORTCUT_RESULT, 'utf16le'\)/)
-    assert.match(host, /readFileSync\(SHORTCUT_BACKUP, 'utf16le'\)/)
+    assert.match(host, /readFileSync\(shortcutResult\(\), 'utf16le'\)/)
+    assert.match(host, /readFileSync\(shortcutBackup\(\), 'utf16le'\)/)
+  })
+
+  it('points the adopted icon at a copy of the launcher, not at the package', async () => {
+    // The package can be removed; the shortcut cannot. What the helper is told to
+    // write into the .lnk is therefore the host's own copy in the state directory,
+    // and the packaged wrapper is reached through it.
+    const host = await readFile(at('src/index.js'), 'utf8')
+    assert.match(host, /const launcher = shortcutLauncher\(\)/)
+    assert.match(host, /const shortcutLauncher = \(\) => join\(ensureStateDir\(\), 'shortcut-launch\.vbs'\)/)
+    assert.doesNotMatch(host, /const launcher = join\(WORKSPACE_ROOT, 'scripts', 'launch-dsh\.vbs'\)/)
+    // What the copy must NOT be handed is a recorded path back into this package:
+    // `dsh plugin remove` deletes the profile entry, not a `link:` checkout, so a
+    // recorded path would keep the shortcut launching a plugin that is gone while the
+    // original never came back. A stale record from that build is deleted here.
+    assert.doesNotMatch(host, /writeFileSync\(join\(state, 'launcher-path\.txt'\)/)
+    assert.match(host, /rmSync\(join\(state, 'launcher-path\.txt'\), \{ force: true \}\)/)
+    // An icon adopted by an earlier version points INSIDE the package. Booting has
+    // to move it onto the copy without waiting for the card to be touched.
+    assert.match(host, /const owned = recordedShortcut\(\)/)
+    assert.match(host, /callShortcutHelper\('apply', owned\)/)
+  })
+
+  it('ships a launcher copy that survives the package it came from', async () => {
+    const vbs = await readFile(at('scripts/shortcut-launch.vbs'), 'utf8')
+    // eslint-disable-next-line no-control-regex -- ASCII-ness is exactly the claim
+    assert.doesNotMatch(vbs, /[^\u0000-\u007F]/u, 'shortcut-launch.vbs must stay ASCII-only')
+    // Installed: the PROFILE is the authority -- `dsh plugin remove` deletes exactly
+    // that entry -- and the launch is handed over with this launch's own arguments
+    // and exit code.
+    assert.match(vbs, /node_modules\\dsh-power-switch\\scripts\\launch-dsh\.vbs/)
+    assert.doesNotMatch(vbs, /launcher-path\.txt/, 'a recorded path is not an install check')
+    assert.match(vbs, /shell\.Run\(q & HostExe\(\) & q & " " & q & launcher & q & childArgs, 0, True\)/)
+    assert.match(vbs, /WScript\.Quit exitCode/)
+    // Gone: the record beside it is replayed by the repair script, quietly, and the
+    // person is told what happened in ONE dialog.
+    assert.match(vbs, /restore-shortcut\.vbs"\)/)
+    assert.match(vbs, /shell\.Run\(q & HostExe\(\) & q & " " & q & restore & q & " \/quiet", 0, True\)/)
+    assert.match(vbs, /original launch method has been put back/)
+    // The wrapper's own home rule, so a shortcut started from Explorer and one
+    // started from a shell resolve the same state directory.
+    assert.match(vbs, /%DSH_HOME%/)
+    assert.match(vbs, /--home/)
+  })
+
+  it('lets the repair script be asked to stay quiet', async () => {
+    // `shortcut-launch.vbs` runs it after finding the package gone, and reports the
+    // result itself; two dialogs for one event is one too many -- and a dialog a
+    // hidden launch cannot dismiss would hang the shortcut instead of explaining it.
+    const vbs = await readFile(at('scripts/restore-shortcut.vbs'), 'utf8')
+    assert.match(vbs, /If LCase\(WScript\.Arguments\(i\)\) = "\/quiet" Then quiet = True/)
+    assert.match(vbs, /Sub Report\(text, style\)/)
+    assert.match(vbs, /If quiet = True Then Exit Sub/)
+    // Every report goes through it -- an early exit that called MsgBox directly is
+    // exactly the dialog that would hang a launch nobody is watching.
+    assert.doesNotMatch(vbs, /^\s*MsgBox (?!text, style)/mu)
+    assert.match(vbs, /^\s*MsgBox text, style, "dsh-power-switch"$/mu)
+  })
+
+  it('asks for its dialog text instead of carrying it, because wscript reads ANSI', async () => {
+    // Chinese written into a `.vbs` arrives on screen as mojibake; reading the script
+    // as UTF-16 instead would make it a binary blob in the repository. So the text
+    // comes from the file the host writes beside the copy, and the English compiled
+    // into each call site is the fallback.
+    for (const name of ['scripts/shortcut-launch.vbs', 'scripts/restore-shortcut.vbs']) {
+      const vbs = await readFile(at(name), 'utf8')
+      assert.match(vbs, /Function Msg\(key, fallback\)/, `${name} must look its text up`)
+      assert.match(vbs, /Sub LoadMessages\(\)/)
+      assert.match(vbs, /shortcut-messages\.txt/)
+      assert.match(vbs, /RegRead\("HKCU\\Control Panel\\International\\LocaleName"\)/, `${name} must ask Windows which language to speak`)
+      assert.match(vbs, /DSH_POWER_SWITCH_LANG/, `${name} must allow the language to be forced`)
+      const used = [...vbs.matchAll(/Msg\("([a-z0-9_]+)"/gu)].map((match) => match[1])
+      assert.ok(used.length >= 4, `${name} must ask for its dialogs`)
+    }
+    const host = await readFile(at('src/index.js'), 'utf8')
+    assert.match(host, /writeFileSync\(join\(state, 'shortcut-messages\.txt'\), `\\ufeff\$\{renderShortcutMessages\(\)\}`, 'utf16le'\)/)
   })
 
   it('wraps the cmd /c command, and waits so the exit code can be reported', async () => {
@@ -660,8 +735,8 @@ describe('desktop shortcut placement', () => {
     assert.match(vbs, /The record is incomplete \(missing /)
     // And the host keeps that copy where uninstalling cannot reach it.
     const host = await readFile(at('src/index.js'), 'utf8')
-    assert.match(host, /join\(WORKSPACE_ROOT, 'scripts', 'restore-shortcut\.vbs'\)/)
-    assert.match(host, /join\(ensureStateDir\(\), 'restore-shortcut\.vbs'\)/)
+    assert.match(host, /for \(const name of \['shortcut-launch\.vbs', 'restore-shortcut\.vbs'\]\)/)
+    assert.match(host, /copyFileSync\(join\(WORKSPACE_ROOT, 'scripts', name\), join\(state, name\)\)/)
   })
 
   it('never lets the card choose a target, a path or a name', async () => {

@@ -126,7 +126,17 @@ Function ApplyOurs(path)
   Else
     link.Arguments = """" & launcher & """ --home """ & home & """"
   End If
-  link.WorkingDirectory = fso.GetParentFolderName(fso.GetParentFolderName(launcher))
+  ' The working directory is the HARNESS HOME, not the launcher's package: this
+  ' shortcut has to stay valid after the package is gone, and a "Start in" pointing
+  ' at a deleted directory is one more thing that looks broken. It is cosmetic --
+  ' the launcher passes the CLI its own working directory, taken from the boot
+  ' record -- so the only other requirement is that it exists. Without a home the
+  ' launcher's own folder stays the fallback.
+  If home = "" Then
+    link.WorkingDirectory = fso.GetParentFolderName(fso.GetParentFolderName(launcher))
+  Else
+    link.WorkingDirectory = home
+  End If
   link.Description = description
   link.Save
   If Err.Number <> 0 Then
