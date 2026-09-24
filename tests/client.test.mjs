@@ -128,6 +128,21 @@ async function loadBundle() {
     }),
     closed: false,
     close() { windowStub.closed = true },
+    /**
+     * The geometry an app window may change for itself.
+     *
+     * Measured on Edge 151: a page inside an `--app` window CAN move and resize that
+     * window (`resizeTo(1200,700)` took it to 1202x702), and that is the only way its
+     * size can be decided at all -- once the browser has an instance running, it
+     * creates the window itself and ignores the launching command line's switches.
+     */
+    screen: { availWidth: 2048, availHeight: 1104 },
+    outerWidth: 1010,
+    outerHeight: 1085,
+    movedTo: [],
+    resizedTo: [],
+    moveTo(x, y) { windowStub.movedTo.push([x, y]) },
+    resizeTo(width, height) { windowStub.resizedTo.push([width, height]) },
     // Flipped per mount: the card polls while confirming the exit, and most
     // tests want that off so no stray probe fires after they assert.
     __DSH_POWER_SWITCH_NO_REVIVAL__: true,
@@ -180,6 +195,11 @@ async function loadBundle() {
     windowStub.standalone = overrides.standalone === true
     windowStub.name = overrides.windowName ?? ''
     windowStub.closed = false
+    windowStub.movedTo = []
+    windowStub.resizedTo = []
+    // No app-window marker unless a test asks for one: the marker is what tells the
+    // page the launcher opened this window, and it must not leak between mounts.
+    windowStub.location = overrides.location ?? { href: 'http://127.0.0.1:3080/', hash: '' }
     windowStub.__DSH_POWER_SWITCH_NO_REVIVAL__ = overrides.revival !== true
     const translations = overrides.translations ?? {}
     const registrations = []
@@ -305,6 +325,21 @@ const openDialogs = (tree, primitives) => collect(
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 0) })
 
 /**
+ * A fetch double for the mounts that only need the page to come up.
+ *
+ * The card reads the launch mode and the advanced settings on mount; nothing here
+ * touches the shutdown or restart routes, which get their own doubles.
+ */
+const quietFetch = async () => ({
+  ok: true,
+  status: 200,
+  json: async () => ({ ok: true, launchMode: 'tab', delayMs: 1000, exitCode: 0, hard: false }),
+})
+
+/** The URL fragment the launcher puts on an app window it opened. */
+const APP_WINDOW_MARKER = { href: 'http://127.0.0.1:3080/?token=x#dsh-power-switch-app', hash: '#dsh-power-switch-app' }
+
+/**
  * Intercept only the card's liveness probe.
  *
  * The card arms it as `setTimeout(fn, PROBE_INTERVAL_MS)`. Everything else --
@@ -351,19 +386,25 @@ describe('client bundle artifact', () => {
     } finally { bundle.restore() }
   })
 
-  it('cancels the shutdown watch when the card unmounts', async () => {
+  it('cancels the shutdown watch from both seats when they unmount', async () => {
     // The watch is a CHAIN of setTimeout calls, so the only way to stop it is to
     // hold the handle that arms the next link: a bare recursive call kept polling
-    // for up to 15 s after the card was gone, calling setState on an unmounted
-    // component. The harness here never unmounts a card, so this is asserted on
-    // the artifact -- exactly one arming point, kept in a ref that the unmount
+    // for up to 15 s after the control was gone, calling setState on an unmounted
+    // component. The harness here never unmounts one, so this is asserted on the
+    // artifact -- exactly one arming point, chained through a ref that each seat's
     // cleanup clears.
     const bundle = await readFile(new URL('../client.js', import.meta.url), 'utf8')
-    const armings = bundle.match(/window\.setTimeout\(\(\) => \{ void probe\(\) \}, PROBE_INTERVAL_MS\)/gu) ?? []
+    const armings = bundle.match(/timerRef\.current = window\.setTimeout\(\(\) => \{ void probe\(\) \}, PROBE_INTERVAL_MS\)/gu) ?? []
     assert.equal(armings.length, 1, 'the watch must arm its next poll in exactly one place')
-    assert.match(bundle, /revivalTimer\.current = window\.setTimeout\(\(\) => \{ void probe\(\) \}, PROBE_INTERVAL_MS\)/)
+    // Both seats hold the chain: the card (twice -- an answer, and a dropped
+    // connection) and the sidebar button, which closes the window when the process
+    // is gone rather than when the host merely answered.
+    assert.match(bundle, /watchForRevival = \(holdMs\) => \{[\s\S]{0,400}?timerRef: revivalTimer/u)
+    assert.match(bundle, /timerRef: closingTimer/u)
     assert.match(bundle, /const revivalTimer = React\.useRef\(null\)/)
+    assert.match(bundle, /const closingTimer = React\.useRef\(null\)/)
     assert.match(bundle, /window\.clearTimeout\(revivalTimer\.current\)/)
+    assert.match(bundle, /window\.clearTimeout\(closingTimer\.current\)/)
   })
 
   it('never names a package row that the boot graph cannot compose', async () => {
@@ -540,7 +581,11 @@ describe('the power control', () => {
       assert.equal(requests.length, 1)
       assert.equal(requests[0].url, '/api/dsh-power-switch/shutdown')
       assert.equal(requests[0].init.method, 'POST')
-      assert.deepEqual(JSON.parse(requests[0].init.body), { delayMs: 700 })
+      // No delay in the body: the configured "wait before exit" governs every
+      // exit, this button included. The card used to send 700 ms, which both
+      // could not matter (below the response's own grace) and silently outranked
+      // the setting the person had just saved.
+      assert.deepEqual(JSON.parse(requests[0].init.body), {})
       assert.match(textOf(mounted.tree), /4242/)
       assert.equal(openDialogs(mounted.tree, mounted.primitives).length, 0, 'the dialog closes once the request is away')
       assert.equal(phaseOf(mounted.tree), 'waiting')
@@ -882,8 +927,54 @@ describe('the power control', () => {
     } finally { bundle.restore() }
   })
 
-  it('reports a refused restart in the reader\'s language, from either control', async () => {
+  it('fills the work area when this page IS the app window the launcher opened', async () => {
+    // The size cannot be chosen at launch: with the browser already running it makes
+    // the window itself and ignores the command line's switches (measured: bare,
+    // --start-maximized, --window-size, --kiosk and --start-fullscreen all gave the
+    // same half-width window). The page CAN move and resize its own app window, so it
+    // does -- and the marker the launcher puts on the URL is what says this is one.
     const bundle = await loadBundle()
+    try {
+      bundle.mount('page', quietFetch, { standalone: true, opener: null, location: APP_WINDOW_MARKER })
+      await settle()
+      assert.deepEqual(bundle.windowStub.movedTo, [[0, 0]], 'an app window is put back at the origin')
+      assert.deepEqual(bundle.windowStub.resizedTo, [[2048, 1104]], 'and fills the work area, not the raw screen')
+    } finally { bundle.restore() }
+  })
+
+  it('leaves a window alone when the launcher did not open it', async () => {
+    // No marker: somebody's own tab, popup or installed PWA. Not ours to resize,
+    // whatever its shape.
+    const bundle = await loadBundle()
+    try {
+      bundle.mount('page', quietFetch, { standalone: true, opener: null })
+      await settle()
+      assert.deepEqual(bundle.windowStub.resizedTo, [])
+    } finally { bundle.restore() }
+  })
+
+  it('leaves an app window alone once it is already that large', async () => {
+    const bundle = await loadBundle()
+    try {
+      bundle.windowStub.outerWidth = 2048
+      bundle.windowStub.outerHeight = 1104
+      bundle.mount('page', quietFetch, { standalone: true, opener: null, location: APP_WINDOW_MARKER })
+      await settle()
+      assert.deepEqual(bundle.windowStub.resizedTo, [], 'nothing to do, and a person may have enlarged it')
+    } finally { bundle.restore() }
+  })
+
+  it('survives a window that refuses to be resized', async () => {
+    const bundle = await loadBundle()
+    try {
+      bundle.windowStub.resizeTo = () => { throw new Error('not allowed') }
+      const mounted = bundle.mount('page', quietFetch, { standalone: true, opener: null, location: APP_WINDOW_MARKER })
+      await settle()
+      assert.notEqual(mounted.side, undefined, 'the control still renders')
+    } finally { bundle.restore() }
+  })
+
+  it('reports a refused restart in the reader\'s language, from either control', async () => {    const bundle = await loadBundle()
     try {
       const mounted = bundle.mount('page', async (url) => {
         if (String(url).includes('/restart')) {
@@ -907,5 +998,79 @@ describe('the power control', () => {
       assert.match(shown, /无法自动重启/u, 'a named refusal must be explained, not pasted')
       assert.doesNotMatch(shown, /dsh web server/u)
     } finally { bundle.restore() }
+  })
+
+  it('closes the sidebar window when the PROCESS is gone, not when the host answers', async () => {
+    // The report that produced this: with a ten-second wait configured, the
+    // sidebar closed the window the moment the host answered and the process
+    // outlived it by ten seconds. "Accepted" and "gone" are different moments.
+    const bundle = await loadBundle()
+    const probes = captureProbes()
+    try {
+      let reachable = true
+      const mounted = bundle.mount('page', async (url) => {
+        if (String(url).startsWith('/api/')) {
+          return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9, delayMs: 10_000 }) }
+        }
+        if (!reachable) throw new TypeError('Failed to fetch')
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }, { revival: true, opener: {} })
+      await settle()
+      collect(mounted.side, (node) => node.props?.['data-dsh-power-shutdown'] === 'sidebar')[0].props.onClick()
+      collect(mounted.side, (node) => node.props?.['data-dsh-power-side-confirm'] === 'true')[0].props.onClick()
+      await settle()
+
+      assert.equal(bundle.windowStub.closed, false, 'the host answered, but the process has not left yet')
+      assert.equal(probes.timers.length, 1, 'the sidebar watches for the process instead of assuming')
+
+      // Still answering: the watch keeps going rather than closing the window.
+      probes.timers[0]()
+      await settle()
+      assert.equal(bundle.windowStub.closed, false, 'still serving, so nothing may close')
+      assert.equal(probes.timers.length, 2, 'and it keeps asking')
+
+      // Now the process is gone, which is the moment the window may close.
+      reachable = false
+      probes.timers[1]()
+      await settle()
+      assert.equal(bundle.windowStub.closed, true, 'the window closes once the service stopped answering')
+    } finally {
+      probes.restore()
+      bundle.restore()
+    }
+  })
+
+  it('keeps watching past the short window when the configured wait is longer', async () => {
+    // The watch used to give up after 15 s flat, so a 30 s wait would be reported
+    // as "still running" while the process was doing exactly what it was told. The
+    // budget now follows the hold the host reported.
+    const bundle = await loadBundle()
+    const probes = captureProbes()
+    const realDateNow = Date.now
+    try {
+      const start = realDateNow()
+      Date.now = () => start + 16_000
+      const mounted = bundle.mount('page', async (url) => {
+        if (String(url).startsWith('/api/')) {
+          return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9, delayMs: 30_000 }) }
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }, { revival: true, opener: {}, translations: { stillRunning: 'STILL_RUNNING' } })
+      await settle()
+      collect(mounted.side, (node) => node.props?.['data-dsh-power-shutdown'] === 'sidebar')[0].props.onClick()
+      collect(mounted.side, (node) => node.props?.['data-dsh-power-side-confirm'] === 'true')[0].props.onClick()
+      await settle()
+      probes.timers[0]()
+      await settle()
+
+      const status = collect(mounted.side, (node) => node.props?.['data-dsh-power-side-status'] !== undefined)[0]
+      assert.doesNotMatch(textOf(status), /STILL_RUNNING/u, '16 s in, a 30 s wait is not a stuck process')
+      assert.equal(probes.timers.length, 2, 'the watch is still running')
+      assert.equal(bundle.windowStub.closed, false)
+    } finally {
+      Date.now = realDateNow
+      probes.restore()
+      bundle.restore()
+    }
   })
 })

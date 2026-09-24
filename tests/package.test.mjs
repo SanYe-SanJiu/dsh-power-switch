@@ -176,8 +176,26 @@ describe('generated relaunch supervisor', () => {
       assert.doesNotMatch(await readFile(at(file), 'utf8'), /--app=/, `${file} must defer to restart-shared.mjs`)
     }
     const shared = await readFile(at('scripts/restart-shared.mjs'), 'utf8')
-    // Written as a template literal, so the assertion matches it as written.
-    assert.match(shared, /\[`--app=\$\{url\}`/)
+    // The window is opened on the plugin's own hand-over page, which fills the work
+    // area as its FIRST action and then replaces itself with the authenticated URL.
+    // Measured: that arrives already filled (the window was at the filled size by the
+    // first sample, 165 ms after launch), where resizing from inside DSH's boot
+    // flashed the half-width window for as long as the app took to render.
+    assert.match(shared, /\[`--app=\$\{appWindowUrl\(url\)\}`/)
+    assert.match(shared, /export function appWindowUrl\(url\)/)
+    assert.match(shared, /const APP_WINDOW_ROUTE = '\/api\/dsh-power-switch\/app-window'/)
+    // The marker both halves know: the hand-over page adds it, the app reads it and
+    // tries again if the browser refused the first resize.
+    assert.match(shared, /export const APP_WINDOW_HASH = '#dsh-power-switch-app'/)
+    const host = await readFile(at('src/host.js'), 'utf8')
+    assert.match(host, /export const APP_WINDOW_ROUTE = '\/api\/dsh-power-switch\/app-window'/)
+    assert.match(host, /export const APP_WINDOW_HASH = '#dsh-power-switch-app'/)
+    assert.match(host, /export function createAppWindowHandler\(\)/)
+    assert.match(host, /window\.resizeTo\(window\.screen\.availWidth, window\.screen\.availHeight\)/)
+    const client = await readFile(at('client.js'), 'utf8')
+    assert.match(client, /const APP_WINDOW_HASH = '#dsh-power-switch-app'/, 'the page must know the marker the launcher sets')
+    assert.match(client, /String\(window\.location\?\.hash \?\? ''\)\.includes\(APP_WINDOW_HASH\)/)
+    assert.match(client, /window\.resizeTo\(width, height\)/)
   })
 
   it('gives the desktop launcher the same shared decision', async () => {

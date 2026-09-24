@@ -591,6 +591,38 @@ export function openAsTab(url, log) {
 }
 
 /**
+ * The URL fragment that marks a window as one this plugin opened for app mode.
+ *
+ * The plugin's own hand-over page adds it, and `client.js` reads it: if that page's
+ * first-action resize was refused by the browser, the app tries once more now that
+ * DSH is up. Kept in step with `APP_WINDOW_HASH` in `src/host.js`.
+ */
+export const APP_WINDOW_HASH = '#dsh-power-switch-app'
+
+/** The plugin's hand-over route, on the host that is about to serve DSH. */
+const APP_WINDOW_ROUTE = '/api/dsh-power-switch/app-window'
+
+/**
+ * The URL an app window should be opened with: the plugin's own page, which sizes the
+ * window and then replaces itself with the authenticated DSH URL.
+ *
+ * Opening DSH directly leaves the window on screen at the browser's default size for
+ * as long as DSH's own boot takes, which is a visible half-width window that then
+ * jumps. Measured for this shape: a page that resizes as its first action has the
+ * window at the filled size by the first sample, 165 ms after launch.
+ * @param url - the authenticated DSH URL (its origin is where the route lives).
+ * @returns the URL to pass to `--app=`, or the original when it cannot be parsed.
+ */
+export function appWindowUrl(url) {
+  try {
+    const target = new URL(url)
+    return `${target.origin}${APP_WINDOW_ROUTE}?next=${encodeURIComponent(target.href)}`
+  } catch {
+    return url
+  }
+}
+
+/**
  * Open the URL in the requested shape -- the ONE implementation of that choice.
  *
  * It lives here because it is used from three different entry points: the
@@ -605,6 +637,15 @@ export function openAsTab(url, log) {
  * honoured), which is the entire point of the mode -- a page that can take itself
  * down once DSH is gone. A browser that cannot be found, or cannot be started,
  * falls back to the default browser: no window at all is the worst outcome.
+ *
+ * The window's SIZE is deliberately not a switch here, and that is measured: with
+ * Edge already running -- which it is whenever DSH itself is on screen -- the URL is
+ * handed to that instance, which creates the window with its own bounds and never
+ * reads this command line. A bare `--app=<url>` measured 1010x1084 on a 2048x1152
+ * screen, and `--start-maximized`, `--window-size=1920,1080 --window-position=0,0`,
+ * `--kiosk` and `--start-fullscreen` all measured the same. The window is therefore
+ * opened on {@link appWindowUrl}'s page, which fills the work area as its first
+ * action and then hands over; `client.js` tries again if that was refused.
  * @param url - the authenticated URL.
  * @param mode - `'app'` or `'tab'`.
  * @param log - sink for one line saying what happened.
@@ -621,7 +662,7 @@ export function openWindow(url, mode, log, browser = findBrowser()) {
     return
   }
   try {
-    const opener = spawn(browser, [`--app=${url}`, '--no-first-run'], {
+    const opener = spawn(browser, [`--app=${appWindowUrl(url)}`, '--no-first-run'], {
       detached: true, stdio: 'ignore', windowsHide: false,
     })
     opener.on('error', (error) => {

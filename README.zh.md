@@ -30,16 +30,16 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ```powershell
 # ① 已安装 dsh 命令（npm 全局安装或桌面版）
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
 
 # ② 从源码检出运行，且检出已构建（存在 apps/cli/lib/bin.js）
 #    需在检出根目录执行
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
 
 # ③ 从源码检出运行，未构建或希望直接跑 TypeScript 源码
 #    需在检出根目录执行；官方开发文档（docs/user/develop/basic/publish.md）
 #    对源码检出的写法就是这条
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
 ```
 
 三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。
@@ -108,6 +108,8 @@ dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minim
 
 应用窗口模式下，进程退出后页面自动关闭；普通标签页模式下，浏览器不允许页面关闭由用户打开的标签页，因此卡片提示按 **Ctrl+W**。这属于浏览器行为限制。
 
+"进程退出"就是窗口关闭的时刻，这也正是 `delayMs` 看得见的原因：等待设为 10 秒时，窗口会停留约 10 秒，然后与它所属的进程一起关闭。两个电源控件都遵循这条规则；侧边栏按钮以前在宿主**接受请求**时就关窗口——那是另一个时刻，等待一旦真实生效，这个差别就立刻显得像故障。
+
 ## 重启
 
 重启是两个电源控件弹出的确认框中的第三个选项（取消 / **重启 DSH** / 关闭），也是"切换启动方式"这一动作的最后一步；当你只想替换掉即将被取代的那次启动时，它同样可以单独使用：
@@ -128,7 +130,14 @@ node scripts\restart-dsh-web.mjs --delay-seconds 3
 | | 应用窗口 | 普通标签页 |
 |---|---|---|
 | 打开方式 | Chromium `--app=`（无地址栏与标签栏） | 默认浏览器的标签页 |
+| 窗口尺寸 | 铺满所在屏幕的**工作区** | 由浏览器决定 |
 | 关闭进程后 | 页面自动关闭 | 需按 Ctrl+W |
+
+窗口尺寸由**页面**设定，而不是由启动命令行设定——这是实测结论，不是偏好。Chromium 浏览器只要已有实例在运行（DSH 显示在屏幕上时必然如此），就会把 URL 交给那个实例，由它按自己记住的尺寸创建窗口，**根本不会读**交出 URL 的那条命令行的开关：在 2048×1152 的屏幕上，裸 `--app=<url>` 实测 1010×1084，而 `--start-maximized`、`--window-size=1920,1080 --window-position=0,0`、`--kiosk`、`--start-fullscreen` 实测都是同样大小的半窗。真正有效的是页面移动并调整自己的 app 窗口（同一组实测里 `resizeTo` 把 1010×1085 变成 1202×702）。
+
+正因为如此，启动器把窗口开在**本插件自己的页面上**，而不是直接开在 DSH 上：`/api/dsh-power-switch/app-window?next=<认证 URL>` 的**第一个动作**就是把窗口铺满工作区，随后把自己替换成那个 URL。直接开 DSH 会让窗口以浏览器默认尺寸显示 DSH 启动所需的整段时间——也就是"先半屏、后跳满"那一下。用了交接页之后，窗口出现时就已经是填满的：在启动前开始、每 40ms 采一次尺寸的监视脚本，只观测到**一个**尺寸 `2048×1104 于 0,0`，且交接已经完成。该页面只接受带回环 `http` 且带 token 的 URL（浏览器会跟随它的重定向），使用者自己打开或安装的窗口与此无关；若浏览器拒绝了首次调整，`client.js` 会在 DSH 起来后再试一次。
+
+铺满工作区已经是自动动作的极限：**含任务栏的真全屏需要一次用户手势**，浏览器不允许页面自作主张（实测：加载时 `requestFullscreen()` 被拒；真实点击后同一调用可到 2048×1152；**F11** 则由浏览器完成）。想要真全屏时在 app 窗口里按 `F11` 即可——本插件不会替你按键。
 
 卡片上的切换按钮一次点击完成三件事：保存设置、更新桌面快捷方式、重启 DSH。设置写入 `$DSH_HOME/settings.yaml` 的 `dsh-power-switch` 段，同时更新组合入口，因此宿主的 settings 服务不可用时，重启后仍按所选方式打开。
 
@@ -213,13 +222,13 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 | 键 | 默认值 | 说明 |
 |---|---|---|
 | `launchMode` | `tab` | 下次启动的窗口形态：`tab` / `app` |
-| `delayMs` | `1000` | 收到关闭请求后等待多少毫秒再退出（用于先送出响应） |
-| `exitCode` | `0` | 进程退出码 |
+| `delayMs` | `1000` | 回完响应后等待多少毫秒才开始退出。响应本身需要 1200ms 送达浏览器，那就是下限：`0` 表示"响应一发出就走"，小于 1200 也按 1200 等待 |
+| `exitCode` | `0` | DSH 进程结束时返回给启动它的那一方的状态码——终端（`$LASTEXITCODE`）、服务管理器、脚本。`0` 表示成功，因此非 0 是留给包装脚本用来区分"用户主动关闭"和"崩溃异常"的 |
 | `hard` | `false` | 跳过优雅退出，直接结束进程 |
 
 `launchMode` 由卡片切换；其余三项在卡片自带的**高级设置**块里修改，写入状态目录的 `settings.json`。该块存在的原因：在生成式设置表单的 DSH（0.1.7）上，未声明 schema 的插件拿不到任何表单，没有它这三项就只能手改 profile patch。若宿主仍提供"注册命名空间"那套设置 API，同一次保存也会写入设置文档，使两个界面不会各说各话；最终以记录值为准，删除 `settings.json` 即把决定权交回 loader row 的 `config:` 与设置文档。
 
-卡片的关闭按钮请求 700ms（使界面更快响应）；`delayMs` 为宿主的默认值。
+卡片**不再**自己附带延迟：`delayMs` 管辖所有退出路径，包括卡片上的按钮。（它以前会附上 700ms"让界面更快响应"——这个数既不可能起作用（低于响应本身需要的 1200ms），又静默地压过了使用者刚保存的设置。）想要一次性延迟的调用方仍可在关闭请求体里带 `delayMs`，对该次请求优先于设置。勾选 `hard` 时，进程改为在同一个等待之后结束，而不是等 watchdog。
 
 环境变量：
 

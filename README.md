@@ -30,17 +30,17 @@ You should cd to the deepseek harness folder first
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
 
 # ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
 #    run this from the checkout root
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
 
 # ③ running from a source checkout that is not built, or you prefer the TypeScript
 #    sources — this is the form the upstream development documentation
 #    (docs/user/develop/basic/publish.md) gives for a source checkout
 #    run this from the checkout root
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.3
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
 ```
 
 All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
@@ -112,6 +112,8 @@ The `appExit` service becomes available progressively while the host boots. A sh
 
 In app-window mode the page closes itself once the process is gone. In normal-tab mode a browser refuses to let a page close a tab the user opened, so the card states to press **Ctrl+W**. That is a browser restriction, not a gap in the plugin.
 
+"The process is gone" is the moment the window closes, and that is what makes `delayMs` visible: with a 10 s wait the window stays up for about 10 s and then closes with the process it belongs to. Both power controls work this way. The sidebar button used to close the window as soon as the host **accepted** the request — a different moment, and one that looked broken as soon as the wait became real.
+
 ## Restart
 
 Restarting is the third option in the confirmation dialog both power controls open (Cancel / **Restart DSH** / Shut down), it is the last step of the mode switch, and it stands on its own when the launch about to be replaced is the only thing you want to change:
@@ -132,7 +134,14 @@ Both entries share one rule: the replacement is started by a helper that must co
 | | App window | Normal tab |
 |---|---|---|
 | Opened as | Chromium `--app=` (no address bar or tab strip) | a tab in the default browser |
+| Size | fills the work area of the screen it opens on | wherever the browser puts a tab |
 | After a shutdown | the page closes itself | press Ctrl+W |
+
+The window's size is set by the **page**, not by the launching command line, and that is measured rather than preferred. Once a Chromium browser already has an instance running — which it does whenever DSH is on screen — it hands the URL to that instance, which creates the window with its own bounds and never reads the switches of the command line that handed the URL over: a bare `--app=<url>` measured 1010x1084 on a 2048x1152 screen, and `--start-maximized`, `--window-size=1920,1080 --window-position=0,0`, `--kiosk` and `--start-fullscreen` all measured the same half-width window. What does work is the page moving and resizing its own app window (`resizeTo` took it from 1010x1085 to 1202x702 in the same measurement series).
+
+That is why the launcher opens the window on the plugin's own page rather than on DSH: `/api/dsh-power-switch/app-window?next=<the authenticated URL>` fills the work area as its **first** action and then replaces itself with that URL. Opening DSH directly left the window at the browser's default size for as long as DSH's own boot took — the half-width window that then jumped. With the hand-over page the window is already filled when it appears: a watcher polling every 40 ms from before the launch saw exactly one size, `2048x1104 at 0,0`, with the hand-over already done. The page accepts only a loopback `http` URL carrying a token, because a browser follows its redirect, and a window the person opened or installed themselves is never involved. `client.js` retries the resize once DSH is up if the browser refused it.
+
+Filling the work area is as far as an automatic action goes: **true fullscreen, taskbar included, needs one gesture**, which the browser will not let a page supply for itself (measured: a load-time `requestFullscreen()` is refused, the same call after a real click reaches 2048x1152, and **F11** does it from the browser). Press `F11` in the app window when you want that; the plugin does not press keys for you.
 
 One press of the card's switch does three things: it saves the setting, updates the desktop shortcut, and restarts DSH. The setting is written to the `dsh-power-switch` section of `$DSH_HOME/settings.yaml` and to the composition entry as well, so the choice survives a restart even when the host serves no settings provider.
 
@@ -218,13 +227,13 @@ The card's configuration page, or the loader row's `config:`:
 | Key | Default | Meaning |
 |---|---|---|
 | `launchMode` | `tab` | Window for the next launch: `tab` or `app` |
-| `delayMs` | `1000` | Milliseconds to wait after answering before exiting |
-| `exitCode` | `0` | Process exit code |
+| `delayMs` | `1000` | Milliseconds to wait after answering before the exit begins. The answer itself needs 1200 ms to reach the browser, so that is the floor: `0` means "as soon as the answer is out", and anything below 1200 waits 1200 |
+| `exitCode` | `0` | The status the DSH process ends with, for whatever started it — a shell (`$LASTEXITCODE`), a service manager, a script. `0` is success, so a non-zero value is for a wrapper that wants to tell "the person closed DSH" apart from a crash |
 | `hard` | `false` | Skip the graceful path and end the process at once |
 
 `launchMode` is switched from the card. The other three are edited from the card's own **Advanced settings** block, which writes them to `settings.json` in the state directory. That block exists because it is the only UI for those three on a DSH that generates settings forms (0.1.7) — a plugin without a declared schema gets no generated form, so without it they would be editable only by hand-editing the profile patch. On a host that still has the registered-namespace settings API, the same save is written to the settings document as well, so the two surfaces cannot disagree; the recorded value is the one that governs, and deleting `settings.json` hands the decision back to the loader row's `config:` and the settings document.
 
-The card's shutdown button requests 700 ms so the interface reacts sooner; `delayMs` is the host's own default.
+The card sends **no** delay of its own: `delayMs` governs every exit, the card's buttons included. (It used to send 700 ms "so the interface reacts sooner" — a number that could not matter, being below the 1200 ms the answer needs, and that silently outranked the setting.) A caller that wants a one-off delay can still put `delayMs` in the shutdown request body, which outranks the setting for that request only. With `hard`, the process ends after that same wait instead of after the watchdog.
 
 Environment variables:
 

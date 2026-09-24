@@ -33,11 +33,13 @@ import {
   writeRecordedTokenUrl,
 } from '../scripts/restart-shared.mjs'
 import {
+  APP_WINDOW_ROUTE,
   CONFIG_ROUTE,
   POWER_ROUTE,
   RESTART_ROUTE,
   SETTINGS_ROUTE,
   SHORTCUT_ROUTE,
+  createAppWindowHandler,
   createConfigHandler,
   createExitResponder,
   createPowerHandler,
@@ -446,6 +448,19 @@ export function apply(ctx, config = {}, timings = {}) {
       handler: createConfigHandler({ config: () => current }),
     }),
     'dsh-power-switch: configuration route',
+  )
+
+  // The page an app window opens on. It is what makes the window arrive already
+  // filled instead of showing its default size first: the browser shows a window the
+  // moment it is created, so the only way to size it in time is to size it from the
+  // first thing that page does, rather than from inside DSH's own boot.
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: APP_WINDOW_ROUTE,
+      handler: createAppWindowHandler(),
+    }),
+    'dsh-power-switch: app window route',
   )
 
   ctx.effect(

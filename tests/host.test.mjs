@@ -10,11 +10,15 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'node:test'
 import {
+  APP_WINDOW_HASH,
   DEFAULT_DELAY_MS,
   MAX_DELAY_MS,
   SHORTCUT_MESSAGES,
+  appWindowPage,
+  appWindowTarget,
   chooseShortcutAction,
   classifyShortcut,
+  createAppWindowHandler,
   createConfigHandler,
   createExitPlan,
   createExitResponder,
@@ -308,6 +312,41 @@ describe('createExitPlan', () => {
       assert.ok(plan.forceAtMs > 0)
     }
   })
+
+  it('waits as long as the configured delay asks, and keeps the watchdog behind it', () => {
+    // The bug this pins: for two releases `delayMs` was saved, displayed and
+    // ignored, so every value measured the same 1200 ms -- this function is the
+    // only place the timings are decided, and it did not read the value.
+    const plan = createExitPlan({ code: 0, hard: false, delayMs: 5000 }, 1200, 6500)
+    assert.equal(plan.delayMs, 5000)
+    assert.equal(plan.gracefulAtMs, 5000, 'the graceful request happens after the wait')
+    assert.equal(plan.forceAtMs, 11_500, 'and the watchdog keeps its 6500 ms distance above it')
+    // Above the CLI's own 5 s disposal bound either way: the wait must not
+    // pre-empt the flush this plugin exists to protect.
+    assert.ok(plan.forceAtMs - plan.gracefulAtMs >= 5000)
+  })
+
+  it('never leaves before the answer has been written, however small the delay', () => {
+    // 0 is "as soon as the answer is out", not "now": racing the response would
+    // kill the host before its own JSON reached the page that asked for it.
+    for (const delayMs of [0, 10, 1199]) {
+      const plan = createExitPlan({ code: 0, hard: false, delayMs }, 1200, 6500)
+      assert.equal(plan.gracefulAtMs, 1200, `delayMs=${String(delayMs)} must not beat the flush`)
+      assert.equal(plan.forceAtMs, 7700)
+    }
+    // A hard stop waits for the same floor, then ends the process.
+    const hard = createExitPlan({ code: 0, hard: true, delayMs: 5000 }, 1200, 6500)
+    assert.equal(hard.gracefulAtMs, null)
+    assert.equal(hard.forceAtMs, 5000)
+  })
+
+  it('keeps the published default timing when no delay is configured', () => {
+    // The default is 1000 ms and the flush is 1200, so the default path is
+    // unchanged from v1.1.3: 1200 ms to the graceful request, 7700 ms to the force.
+    const plan = createExitPlan(readShutdownRequest({}, resolveConfig({})), 1200, 6500)
+    assert.equal(plan.gracefulAtMs, 1200)
+    assert.equal(plan.forceAtMs, 7700)
+  })
 })
 
 describe('createExitResponder', () => {
@@ -401,6 +440,15 @@ describe('createExitResponder', () => {
     assert.match(harness.notes.join('\n'), /exit requested: code=0 hard=false/u)
   })
 
+  it('records the wait it was actually given, so the log can explain a slow exit', () => {
+    // The whole bug was invisible in this log line: it printed the moments but not
+    // the wait behind them, so a setting that did nothing looked exactly like one
+    // that worked. Not awaited: the note is written synchronously, the exit is not.
+    const harness = makeResponder()
+    void harness.run(makeResponse(), 200, { ok: true }, { code: 0, hard: false, delayMs: 5000 })
+    assert.match(harness.notes.join('\n'), /delay=5000ms gracefulAt=5000ms forceAt=5005ms/u)
+  })
+
   it('refuses to arm a second exit for a repeated request', async () => {
     const harness = makeResponder()
     const first = harness.run(makeResponse(), 200, { ok: true }, { code: 0, hard: false })
@@ -450,9 +498,11 @@ describe('createPowerHandler', () => {
   it('records the exit decision and the watchdog, for the operator reading the log', async () => {
     const driven = await drive({ wait: true })
     const notes = driven.notes.join('\n')
-    // The plan is the diagnosis: it names both moments, so a log that stops
-    // after this line means the process was killed rather than exiting.
-    assert.match(notes, /exit requested: code=0 hard=false gracefulAt=1ms forceAt=6ms graceful=yes/u)
+    // The plan is the diagnosis: it names the wait and both moments, so a log that
+    // stops after this line means the process was killed rather than exiting. The
+    // configured hold (5 ms here) is now part of it, which is exactly what a
+    // setting that did nothing could not show.
+    assert.match(notes, /exit requested: code=0 hard=false delay=5ms gracefulAt=5ms forceAt=10ms graceful=yes/u)
     assert.match(notes, /watchdog: the graceful request has not settled/u)
   })
 
@@ -861,7 +911,7 @@ describe('createSettingsHandler', () => {
 describe('createRestartHandler', () => {
   /** Drive the restart route once, with the real exit responder shortened. */
   async function drive2({
-    config = {}, respawn = () => ({ pid: 4242 }), request = {}, persist, planProblem, awaitRespawn,
+    config = {}, respawn = () => ({ pid: 4242 }), request = {}, persist, planProblem, awaitRespawn, waitMs,
   } = {}) {
     const persisted = []
     const exits = []
@@ -895,7 +945,7 @@ describe('createRestartHandler', () => {
       },
     })
     // Let the short escalation finish before the assertions read it.
-    await new Promise((resolve) => { setTimeout(resolve, 60) })
+    await new Promise((resolve) => { setTimeout(resolve, waitMs ?? 60) })
     return { response, persisted, exits, order }
   }
 
@@ -921,6 +971,9 @@ describe('createRestartHandler', () => {
     const { response, exits } = await drive2({
       config: { delayMs: 250, exitCode: 3 },
       request: { body: '{"launchMode":"tab"}' },
+      // The hold is a real wait now, so the assertions wait past it instead of
+      // reading an empty list from a harness that gave up after 60 ms.
+      waitMs: 400,
     })
     assert.equal(response.json().delayMs, 250)
     assert.deepEqual(exits, [3])
@@ -1201,5 +1254,70 @@ describe('shortcut messages', () => {
     // English lives at the call sites in the scripts, so there is one place to change
     // it and no way for two copies to drift apart.
     assert.equal(SHORTCUT_MESSAGES.en, undefined)
+  })
+})
+
+/**
+ * The page an app window opens on. It exists so the window arrives already filled:
+ * the browser shows a window the moment it is created, so the size has to be set by
+ * the first thing that window's page does.
+ */
+describe('the app window hand-over page', () => {
+  it('accepts only a loopback URL that carries a token', () => {
+    assert.equal(
+      appWindowTarget('http://127.0.0.1:3080/?token=abc'),
+      'http://127.0.0.1:3080/?token=abc',
+    )
+    assert.equal(appWindowTarget('http://localhost:3080/?token=abc'), 'http://localhost:3080/?token=abc')
+    // Anything else would be an open redirect: a browser follows this.
+    assert.equal(appWindowTarget('http://example.com/?token=abc'), null, 'not loopback')
+    assert.equal(appWindowTarget('http://127.0.0.1:3080/'), null, 'no token')
+    assert.equal(appWindowTarget('https://127.0.0.1:3080/?token=abc'), null, 'http only')
+    assert.equal(appWindowTarget('file:///C:/x.html?token=abc'), null, 'not http')
+    assert.equal(appWindowTarget('http://127.0.0.1/?token=abc'), null, 'no port to hand over to')
+    assert.equal(appWindowTarget('http://127.0.0.1:3080/?token=a"b'), null, 'a quote could end the script element')
+    assert.equal(appWindowTarget('http://127.0.0.1:3080/?token=a<b'), null, 'an angle bracket could end it too')
+    assert.equal(appWindowTarget('  '), null)
+    assert.equal(appWindowTarget(undefined), null)
+    assert.equal(appWindowTarget('not a url'), null)
+  })
+
+  it('sizes the window first, then hands over, and cannot be talked out of the URL', () => {
+    const page = appWindowPage('http://127.0.0.1:3080/?token=abc')
+    const resizeAt = page.indexOf('window.resizeTo(window.screen.availWidth, window.screen.availHeight)')
+    const handOverAt = page.indexOf('window.location.replace(')
+    assert.ok(resizeAt > 0, 'the page fills the work area')
+    assert.ok(handOverAt > resizeAt, 'and it does that BEFORE handing over, or the flash comes back')
+    // The marker rides on the hand-over URL, so the running app can try again.
+    assert.match(page, /location\.replace\("http:\/\/127\.0\.0\.1:3080\/\?token=abc#dsh-power-switch-app"\)/u)
+    assert.equal(APP_WINDOW_HASH, '#dsh-power-switch-app')
+    // A resize the browser refuses must not stop the hand-over.
+    assert.match(page, /catch \(error\) \{/u)
+  })
+
+  it('serves the page, and refuses anything it would have to redirect blindly to', () => {
+    const handler = createAppWindowHandler()
+    const answer = (url, method = 'GET') => {
+      const response = makeResponse()
+      handler({ method, url, headers: { host: '127.0.0.1:3080' }, socket: { remoteAddress: '127.0.0.1' } }, response)
+      return response
+    }
+    const good = answer('/api/dsh-power-switch/app-window?next=http%3A%2F%2F127.0.0.1%3A3080%2F%3Ftoken%3Dabc')
+    assert.equal(good.state.status, 200)
+    assert.equal(good.state.headers['content-type'], 'text/html; charset=utf-8')
+    assert.match(good.state.body, /location\.replace/u)
+
+    const missing = answer('/api/dsh-power-switch/app-window')
+    assert.equal(missing.state.status, 400)
+    const wrong = answer('/api/dsh-power-switch/app-window?next=http%3A%2F%2Fevil.example%2F%3Ftoken%3Dabc')
+    assert.equal(wrong.state.status, 400)
+    const post = answer('/api/dsh-power-switch/app-window?next=x', 'POST')
+    assert.equal(post.state.status, 405)
+    const untrusted = (() => {
+      const response = makeResponse()
+      handler({ method: 'GET', url: '/api/dsh-power-switch/app-window?next=x', headers: { host: '127.0.0.1:3080' }, socket: { remoteAddress: '10.0.0.9' } }, response)
+      return response
+    })()
+    assert.equal(untrusted.state.status, 403)
   })
 })

@@ -238,13 +238,14 @@ describe('host plugin wiring', () => {
     assert.equal(readRecordedLaunchMode(), 'app')
   })
 
-  it('registers the shutdown, configuration, restart, shortcut and settings routes', () => {
+  it('registers the shutdown, configuration, app-window, restart, shortcut and settings routes', () => {
     const { ctx, state } = makeContext()
     apply(ctx, {})
-    assert.equal(state.routes.length, 5)
+    assert.equal(state.routes.length, 6)
     assert.deepEqual(
       state.routes.map((route) => route.path).sort(),
       [
+        '/api/dsh-power-switch/app-window',
         '/api/dsh-power-switch/config',
         '/api/dsh-power-switch/restart',
         '/api/dsh-power-switch/settings',
@@ -261,11 +262,12 @@ describe('host plugin wiring', () => {
   it('registers each route inside its own labelled effect, so unloading retracts it', () => {
     const { ctx, state } = makeContext()
     apply(ctx, {})
-    // Five routes plus the exit-probe lifetime effect.
-    assert.equal(state.effects.length, 6)
+    // Six routes plus the exit-probe lifetime effect.
+    assert.equal(state.effects.length, 7)
     const labels = state.effects.map((effect) => effect.label).join('\n')
     assert.match(labels, /shutdown route/)
     assert.match(labels, /configuration route/)
+    assert.match(labels, /app window route/)
     assert.match(labels, /restart route/)
     assert.match(labels, /shortcut route/)
     assert.match(labels, /settings route/)
@@ -314,10 +316,10 @@ describe('host plugin wiring', () => {
     const codes = []
     const { ctx, state } = makeContext({ appExit: (code) => { codes.push(code) } })
     apply(ctx, { delayMs: 5 }, { flushMs: 1, watchdogMs: 5 })
-    // All five routes exist; only the host-generated configuration form is lost
+    // All six routes exist; only the host-generated configuration form is lost
     // without a settings provider (the advanced settings are recorded by the
     // plugin itself, so they stay editable).
-    assert.equal(state.routes.length, 5)
+    assert.equal(state.routes.length, 6)
     await shutdownRoute(state).handler(makeRequest({ headers: TRUSTED, body: '{}' }), makeResponse())
     await new Promise((resolve) => { setTimeout(resolve, 40) })
     assert.deepEqual(codes, [0])

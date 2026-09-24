@@ -32,8 +32,16 @@ window.__ModuleLoader__.load({
     const REVIVE_WINDOW_MS = 15_000
     /** Pause between liveness probes. */
     const PROBE_INTERVAL_MS = 1000
-    /** Ask the host for a shorter hold than its default, so the UI reacts. */
-    const REQUESTED_DELAY_MS = 700
+    /**
+     * The card sends NO delay with its exit requests, and that is deliberate.
+     *
+     * It used to send 700 ms "so the UI reacts sooner", which could never have
+     * mattered: 700 is below the grace the answer itself needs, so the host waited
+     * its own shorter-of-the-two anyway -- and, because a request's delay outranks
+     * the configured one, that constant quietly overrode the person's own
+     * "wait before exit" setting. The setting now governs every exit, this button
+     * included; a script that wants a one-off delay can still ask for one.
+     */
     /** How many times an app window re-asks to close before falling back. */
     const AUTO_CLOSE_ATTEMPTS = 3
     /** Pause between those attempts. */
@@ -538,6 +546,114 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * How long to keep meeting the hold the host reported before giving up.
+     *
+     * The CLI's own bound on disposing is 5 s (`PROCESS_SHUTDOWN_TIMEOUT_MS`), so a
+     * watch that outlives the configured hold by that much has seen the process
+     * either leave or refuse to. Without it a machine set to wait longer than the
+     * floor would be told "still running" while it was doing exactly what the
+     * setting asked.
+     */
+    const WATCH_SLACK_MS = 5000
+
+    /**
+     * The hold a host answer reported, in milliseconds.
+     * @param payload - the JSON body of the shutdown/restart answer, if any.
+     * @param fallback - the configured value the card has already read, if any.
+     * @returns a non-negative number.
+     */
+    function holdOf(payload, fallback = 0) {
+      const value = typeof payload?.delayMs === 'number' ? payload.delayMs : fallback
+      return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+    }
+
+    /**
+     * Poll this page until the host stops answering, then report it.
+     *
+     * Both seats need the same watch for the same reason: "the host accepted the
+     * request" and "the process is gone" are different moments whenever the wait
+     * before exit is longer than the response needs. The sidebar used to treat them
+     * as one -- it closed the window the moment the answer arrived, so a person who
+     * set a ten-second wait watched the window vanish and the process outlive it.
+     * The card already watched; this is that watch, shared, with its budget sized to
+     * the hold the host reported.
+     * @param options - the timer ref to chain through, the reported hold, and what to
+     *   do when the host is gone or still answering.
+     */
+    function watchUntilGone({ timerRef, holdMs = 0, onGone, onStillThere }) {
+      // A test harness that owns the event loop opts out of the polling.
+      if (window.__DSH_POWER_SWITCH_NO_REVIVAL__ === true) return
+      const deadline = Date.now() + Math.max(REVIVE_WINDOW_MS, holdMs + WATCH_SLACK_MS)
+      /** Arm the next poll THROUGH the ref, so unmounting cancels the chain. */
+      const arm = () => {
+        timerRef.current = window.setTimeout(() => { void probe() }, PROBE_INTERVAL_MS)
+      }
+      const probe = async () => {
+        let reachable = false
+        try {
+          const response = await fetch(window.location.href, { method: 'GET', cache: 'no-store' })
+          // A refused request still proves something is listening. If it is
+          // still US, disposal has not started; if it answers, a supervisor
+          // brought the service back and this page's launch token is stale.
+          reachable = response.status !== 0
+        } catch {
+          reachable = false
+        }
+        if (!reachable) {
+          onGone()
+          return
+        }
+        if (Date.now() > deadline) {
+          // Still answering after the whole window: it did not stop, and
+          // saying otherwise would be a lie the user cannot check.
+          onStillThere()
+          return
+        }
+        arm()
+      }
+      arm()
+    }
+
+    /**
+     * The fragment the launcher puts on the URL of an app window it opened.
+     *
+     * Kept in step with `APP_WINDOW_HASH` in `scripts/restart-shared.mjs`: the page
+     * needs to know whether THIS window is the app window the plugin launched, and a
+     * window the person opened or installed themselves is not ours to resize.
+     */
+    const APP_WINDOW_HASH = '#dsh-power-switch-app'
+
+    /**
+     * Fill the app window's work area, once, when this page IS that window.
+     *
+     * The window's size cannot be decided at launch, and that is measured rather than
+     * assumed. With Edge already running -- which it is whenever DSH is on screen --
+     * the URL is handed to that instance, which creates the window with its own
+     * bounds and never reads the launching command line: a bare `--app=<url>` measured
+     * 1010x1084 on a 2048x1152 screen, and `--start-maximized`,
+     * `--window-size=1920,1080 --window-position=0,0`, `--kiosk` and
+     * `--start-fullscreen` all measured the same half-width window. The page, on the
+     * other hand, MAY move and resize its own app window (measured: `resizeTo(1200,700)`
+     * took it to 1202x702), which is why the fix is here rather than in the launcher.
+     *
+     * A refusal is swallowed: a browser that will not resize keeps its default size,
+     * which is no worse than before and must not break the card.
+     */
+    function fillAppWindow() {
+      try {
+        const width = window.screen?.availWidth
+        const height = window.screen?.availHeight
+        if (typeof width !== 'number' || typeof height !== 'number') return
+        // Already at least that large: leave a window somebody enlarged alone.
+        if ((window.outerWidth ?? 0) >= width && (window.outerHeight ?? 0) >= height) return
+        window.moveTo(0, 0)
+        window.resizeTo(width, height)
+      } catch {
+        // A window this page may not resize stays at the size the browser chose.
+      }
+    }
+
+    /**
      * The power card.
      * @param props - the page's view request plus the injected face.
      * @returns the summary line, or the control.
@@ -605,7 +721,8 @@ window.__ModuleLoader__.load({
           const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ delayMs: REQUESTED_DELAY_MS }),
+            // No delay: the configured "wait before exit" governs (see above).
+            body: JSON.stringify({}),
             signal: controller.signal,
           })
           const payload = await response.json().catch(() => null)
@@ -617,7 +734,7 @@ window.__ModuleLoader__.load({
           setPid(typeof payload.pid === 'number' ? payload.pid : null)
           setPhase('done')
           setMessage(t('done'))
-          watchForRevival()
+          watchForRevival(holdOf(payload, advanced?.delayMs ?? 0))
         } catch (error) {
           if (error?.name === 'AbortError') {
             // The deadline passed with no answer. Do NOT treat this as sent: the
@@ -633,7 +750,9 @@ window.__ModuleLoader__.load({
           // A refusal the host actually sent is handled above, before this.
           setPhase('done')
           setMessage(t('done'))
-          watchForRevival()
+          // No answer to read the hold from, so the configured one stands in: the
+          // watch must not give up while the process is still waiting.
+          watchForRevival(holdOf(null, advanced?.delayMs ?? 0))
         } finally {
           window.clearTimeout(deadline)
         }
@@ -680,44 +799,25 @@ window.__ModuleLoader__.load({
        * seconds and left the button reading "waiting for the process to exit".
        * The question worth answering is only "did it go down", which one refused
        * or dropped connection settles immediately; the watch window exists just
-       * to cover the configured hold before disposal starts.
+       * to cover the configured hold before disposal starts, so it is sized from
+       * the hold the host reported.
+       * @param holdMs - the wait the host said it would keep before leaving.
        */
-      const watchForRevival = () => {
+      const watchForRevival = (holdMs) => {
         setPhase('waiting')
         setMessage(t('waiting'))
-        // A test harness that owns the event loop can opt out of the polling.
-        if (window.__DSH_POWER_SWITCH_NO_REVIVAL__ === true) return
-        const deadline = Date.now() + REVIVE_WINDOW_MS
-        /** Arm the next poll THROUGH the ref, so unmounting cancels the chain. */
-        const arm = () => {
-          revivalTimer.current = window.setTimeout(() => { void probe() }, PROBE_INTERVAL_MS)
-        }
-        const probe = async () => {
-          let reachable = false
-          try {
-            const response = await fetch(window.location.href, { method: 'GET', cache: 'no-store' })
-            // A refused request still proves something is listening. If it is
-            // still US, disposal has not started; if it answers, a supervisor
-            // brought the service back and this page's launch token is stale.
-            reachable = response.status !== 0
-          } catch {
-            reachable = false
-          }
-          if (!reachable) {
+        watchUntilGone({
+          timerRef: revivalTimer,
+          holdMs,
+          onGone: () => {
             setPhase('gone')
             setMessage(t('gone'))
-            return
-          }
-          if (Date.now() > deadline) {
-            // Still answering after the whole window: it did not stop, and
-            // saying otherwise would be a lie the user cannot check.
+          },
+          onStillThere: () => {
             setPhase('failed')
             setMessage(t('stillRunning'))
-            return
-          }
-          arm()
-        }
-        arm()
+          },
+        })
       }
 
       /**
@@ -1237,6 +1337,26 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false)
       const [status, setStatus] = React.useState(null)
       const [failed, setFailed] = React.useState(false)
+      /**
+       * The watch's next poll, so unmounting cancels the chain.
+       *
+       * This button is rendered in the shell footer, which can be re-rendered away
+       * while the process is still leaving; an uncancelled chain would keep asking
+       * the network whether it is gone.
+       */
+      const closingTimer = React.useRef(null)
+      /** Whether the app window has already been filled, so it happens once. */
+      const [filledAppWindow, setFilledAppWindow] = React.useState(false)
+      React.useEffect(() => () => {
+        if (closingTimer.current !== null) window.clearTimeout(closingTimer.current)
+      }, [])
+      // Runs once, from the render that first sees the marker the launcher added. A
+      // `useEffect` cannot do this here: it would run after paint, so an app window
+      // would show its half-width size first and then jump.
+      if (!filledAppWindow && String(window.location?.hash ?? '').includes(APP_WINDOW_HASH)) {
+        setFilledAppWindow(true)
+        fillAppWindow()
+      }
 
       /**
        * Ask this window to close, a few times, then say which key does it.
@@ -1270,14 +1390,25 @@ window.__ModuleLoader__.load({
           const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ delayMs: REQUESTED_DELAY_MS }),
+            // No delay: the configured "wait before exit" governs (see the sidebar).
+            body: JSON.stringify({}),
           })
           const payload = await response.json().catch(() => null)
           if (!response.ok || payload?.ok !== true) throw new Error(payload?.error ?? `HTTP ${String(response.status)}`)
           setStatus(t('cornerClosing'))
-          // An app window closes itself once the host has accepted; that is the whole
-          // point of the mode, and it applies no matter which control was used.
-          if (closeStrategy() !== 'key') autoClose(AUTO_CLOSE_ATTEMPTS)
+          // The window closes when the PROCESS is gone, not when the host accepted
+          // the request. It used to close right here, which looked wrong the moment
+          // the wait before exit became real: the window vanished and the process
+          // outlived it for as long as the setting asked. The watch is the card's --
+          // one implementation, so the two controls cannot drift apart again.
+          if (closeStrategy() !== 'key') {
+            watchUntilGone({
+              timerRef: closingTimer,
+              holdMs: holdOf(payload),
+              onGone: () => autoClose(AUTO_CLOSE_ATTEMPTS),
+              onStillThere: () => setStatus(t('stillRunning')),
+            })
+          }
         } catch (error) {
           setFailed(true)
           setStatus(`${t('failed')}: ${String(error?.message ?? error)}`)

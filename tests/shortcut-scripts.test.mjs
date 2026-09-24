@@ -80,10 +80,20 @@ function scenario(name, fields) {
   return dir
 }
 
+/**
+ * Run one shipped script the way the shortcut does.
+ *
+ * `USERPROFILE` is redirected into the scratch directory, and that is load-bearing:
+ * the stub falls back to the DEFAULT harness home when the environment and the
+ * shortcut's `--home` name nothing, which is right for a desktop icon and disastrous
+ * for a test -- it resolved this machine's real `~/.dsh`, found the developer's own
+ * installed plugin there, and launched DSH instead of testing the branch it was
+ * asked about. A test that can start the operator's harness is not a test.
+ */
 function wscript(script, { args = [], env = {} } = {}) {
   const run = spawnSync('wscript.exe', ['//nologo', script, ...args], {
     stdio: ['ignore', 'inherit', 'inherit'],
-    env: { ...process.env, DSH_HOME: join(scratch, 'home'), ...env },
+    env: { ...process.env, USERPROFILE: join(scratch, 'userhome'), DSH_HOME: join(scratch, 'home'), ...env },
     timeout: 30_000,
   })
   assert.equal(run.error, undefined, `wscript could not be started: ${String(run.error)}`)
@@ -129,6 +139,9 @@ describe('shortcut repair without the package', () => {
   before(() => {
     scratch = mkdtempSync(join(tmpdir(), 'dsh-power-repair-'))
     mkdirSync(join(scratch, 'home'), { recursive: true })
+    // The default harness home the stub falls back to is `%USERPROFILE%\.dsh`, so the
+    // scratch directory needs a profile of its own -- see `wscript` below.
+    mkdirSync(join(scratch, 'userhome'), { recursive: true })
   })
 
   after(() => {
