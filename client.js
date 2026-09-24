@@ -129,13 +129,15 @@ window.__ModuleLoader__.load({
         shortcutNothing: '桌面快捷方式保持你原来的方式，无需改动。',
         shortcutFailed: '桌面快捷方式未能自动处理：',
         failed: '关闭请求失败',
-        cornerAction: '关闭 DSH',
+        cornerAction: '关闭或重启 DSH',
         cornerClosing: '正在关闭 DSH…',
         cornerStillHere: '已请求关闭；本页可以按 Ctrl+W 关掉。',
         cancel: '取消',
         confirm: '确认关闭',
-        dialogTitle: '确认关闭 DSH 进程？',
-        dialogBody: '这会结束正在运行的 dsh web 进程：进行中的回合、后台任务与终端会话都会被中止。',
+        restartAction: '重启 DSH',
+        restartFailed: '重启失败：',
+        dialogTitle: '关闭或重启 DSH 进程？',
+        dialogBody: '关闭会结束正在运行的 dsh web 进程：进行中的回合、后台任务与终端会话都会被中止。重启会先停掉它，再用它自己记录的启动命令重新拉起——无法安全重启时会明确拒绝，服务保持可用。',
         style: '样式',
         pid: '进程 PID',
       },
@@ -191,13 +193,15 @@ window.__ModuleLoader__.load({
         shortcutNothing: 'the desktop shortcut is still your original one \u2014 nothing to change.',
         shortcutFailed: 'the desktop shortcut could not be handled: ',
         failed: 'Shutdown request failed',
-        cornerAction: 'Shut down DSH',
+        cornerAction: 'Shut down or restart DSH',
         cornerClosing: 'shutting DSH down\u2026',
         cornerStillHere: 'shutdown requested; press Ctrl+W to close this page.',
         cancel: 'Cancel',
         confirm: 'Shut down',
-        dialogTitle: 'Shut down the DSH process?',
-        dialogBody: 'This ends the running dsh web process: turns in flight, background jobs and terminal sessions are aborted.',
+        restartAction: 'Restart DSH',
+        restartFailed: 'The restart failed: ',
+        dialogTitle: 'Shut down or restart the DSH process?',
+        dialogBody: 'Shutting down ends the running dsh web process: turns in flight, background jobs and terminal sessions are aborted. Restarting stops it and starts again from the launch command it recorded itself \u2014 when that cannot be done safely it refuses and keeps serving.',
         style: 'Style',
         pid: 'Process PID',
       },
@@ -439,6 +443,67 @@ window.__ModuleLoader__.load({
     const askConfirm = (local) => window.confirm(`${local.dialogTitle}\n\n${local.dialogBody}`)
 
     /**
+     * Localized copy for a refusal the host NAMED.
+     *
+     * The host refuses instead of risking an outage, and it reports a stable
+     * `reason` code with its diagnostic. Without this the card pasted the host's
+     * English error at somebody reading a Chinese page — the failure was
+     * explainable, and the explanation was in the wrong language.
+     *
+     * Module scope because BOTH controls need it: the card's switch and the sidebar
+     * button's restart now share the same refusal vocabulary.
+     * @param t - the bound translator.
+     * @param reason - `payload.reason` from a refused restart, if any.
+     * @returns the copy to show, or null to fall back to the raw message.
+     */
+    const refusalCopyFor = (t, reason) => {
+      if (reason === 'unsupported-host') return t('launchRefusedHost')
+      if (reason === 'helper-unavailable') return t('launchRefusedHelper')
+      if (reason === 'helper-not-confirmed') return t('launchRefusedUnconfirmed')
+      return null
+    }
+
+    /**
+     * Ask the host to restart itself, in the mode it is already using.
+     *
+     * The body names NO mode, and that is deliberate: the host then restarts into
+     * the mode it is currently configured for, so this control can never change a
+     * setting — it only replaces the process. It also means a card whose config
+     * read failed can still restart safely, because the decision stays with the
+     * host.
+     *
+     * It shares the mode switch's deadline: the host answers BEFORE it disposes,
+     * so silence means the request never landed and the control must come back.
+     * @returns `{ ok: true }`, or `{ ok: false, aborted?, reason?, error }` with the
+     *   host's stable refusal code when it sent one.
+     */
+    async function requestRestart() {
+      const controller = new AbortController()
+      const deadline = window.setTimeout(() => { controller.abort() }, RESTART_REQUEST_TIMEOUT_MS)
+      try {
+        const response = await fetch(absoluteUrl(RESTART_ROUTE), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+          signal: controller.signal,
+        })
+        const payload = await response.json().catch(() => null)
+        if (!response.ok || payload?.ok !== true) {
+          return {
+            ok: false,
+            reason: typeof payload?.reason === 'string' ? payload.reason : undefined,
+            error: String(payload?.error ?? `HTTP ${String(response.status)}`),
+          }
+        }
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, aborted: error?.name === 'AbortError', error: String(error?.message ?? error) }
+      } finally {
+        window.clearTimeout(deadline)
+      }
+    }
+
+    /**
      * Whether this window can close itself, and whether it should do so by itself.
      *
      * `dsh web` hands the URL to the OS (`spawnBrowserLauncher`), so an ordinary
@@ -575,6 +640,39 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * Restart the host from the confirmation dialog.
+       *
+       * The same route the mode switch ends with, minus its first two steps: no
+       * mode change and no shortcut write, so this control replaces the process and
+       * nothing else. Afterwards the page behaves exactly as it does after a
+       * switch — a restart that worked takes this page with it, because the
+       * replacement mints a new launch token — including the recovery timer, so a
+       * restart that never landed gives the control back instead of freezing it.
+       */
+      const restartDsh = async () => {
+        setConfirming(false)
+        setPhase('working')
+        setMessage(null)
+        const result = await requestRestart()
+        if (!result.ok) {
+          setPhase('failed')
+          const refused = refusalCopyFor(t, result.reason)
+          setMessage(result.aborted
+            ? `${t('restartFailed')}${t('launchNoAnswer')}`
+            : (refused ?? `${t('restartFailed')}${result.error}`))
+          return
+        }
+        setPhase('done')
+        setMessage(t('launchRestarting'))
+        if (switchTimer.current !== null) window.clearTimeout(switchTimer.current)
+        switchTimer.current = window.setTimeout(() => {
+          switchTimer.current = null
+          setPhase('failed')
+          setMessage(t('launchStillHere'))
+        }, SWITCH_SPENT_MS)
+      }
+
+      /**
        * Confirm the process actually went down, then stop.
        *
        * This is a SHORT watch on purpose. A plain shutdown never comes back, so
@@ -685,12 +783,9 @@ window.__ModuleLoader__.load({
        * @param reason - `payload.reason` from a refused restart, if any.
        * @returns the copy to show, or null to fall back to the raw message.
        */
-      const refusalCopy = (reason) => {
-        if (reason === 'unsupported-host') return t('launchRefusedHost')
-        if (reason === 'helper-unavailable') return t('launchRefusedHelper')
-        if (reason === 'helper-not-confirmed') return t('launchRefusedUnconfirmed')
-        return null
-      }
+      // Delegates to the module-level table, so the sidebar's restart option reads
+      // the same refusals in the same words.
+      const refusalCopy = (reason) => refusalCopyFor(t, reason)
 
       /**
        * Localized copy for a SHORTCUT refusal the host named.
@@ -1081,6 +1176,11 @@ window.__ModuleLoader__.load({
               onClick: () => { setConfirming(false) },
             }, t('cancel')),
             h(primitives.Button, {
+              variant: 'outline',
+              'data-dsh-power-restart': 'true',
+              onClick: () => { void restartDsh() },
+            }, t('restartAction')),
+            h(primitives.Button, {
               variant: 'primary',
               className: 'dpb-danger',
               'data-dsh-power-confirm': 'true',
@@ -1186,6 +1286,32 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * Restart DSH from the same dialog: no mode change, no shortcut write.
+       *
+       * The middle option on purpose — the destructive action stays last, and a
+       * person who opened this dialog meaning "give me a fresh process" does not
+       * have to go find the card's switch instead.
+       */
+      const restartDsh = async () => {
+        setConfirming(false)
+        setBusy(true)
+        setStatus(null)
+        setFailed(false)
+        const result = await requestRestart()
+        setBusy(false)
+        if (!result.ok) {
+          setFailed(true)
+          const refused = refusalCopyFor(t, result.reason)
+          setStatus(refused ?? `${t('restartFailed')}${result.aborted ? t('launchNoAnswer') : result.error}`)
+          return
+        }
+        setStatus(t('launchRestarting'))
+        // Same rule as the shutdown path above: an app window closes itself once the
+        // host has been replaced, because this page's launch token is now stale.
+        if (closeStrategy() !== 'key') autoClose(AUTO_CLOSE_ATTEMPTS)
+      }
+
       /* eslint-disable react/no-unknown-property -- data-* attributes are the page's hooks */
       return h('div', {
         className: 'dpb-side',
@@ -1221,6 +1347,11 @@ window.__ModuleLoader__.load({
               variant: 'outline',
               onClick: () => { setConfirming(false) },
             }, t('cancel')),
+            h(primitives.Button, {
+              variant: 'outline',
+              'data-dsh-power-side-restart': 'true',
+              onClick: () => { void restartDsh() },
+            }, t('restartAction')),
             h(primitives.Button, {
               variant: 'primary',
               className: 'dpb-danger',

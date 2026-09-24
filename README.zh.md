@@ -96,7 +96,7 @@ dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minim
 
 ## 关闭进程
 
-侧边栏 `⏻`、卡片中的「关闭 DSH 进程」按钮，以及 `POST /api/dsh-power-switch/shutdown` 路由，三者行为一致：
+侧边栏 `⏻`、卡片中的「关闭 DSH 进程」按钮，以及 `POST /api/dsh-power-switch/shutdown` 路由，三者行为一致。两个控件都会先弹出确认框，而确认框里同时提供**重启**选项（行为见[重启](#重启)）：
 
 1. 先返回响应，再开始退出（页面因此能收到「已发出关闭请求」；超过 10 秒无响应则报告失败）；
 2. 走优雅退出：会话与设置先落盘，插件树先卸载；
@@ -108,12 +108,14 @@ dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch --config.minim
 
 ## 重启
 
-重启是"切换启动方式"这一动作的最后一步；当你只想替换掉即将被取代的那次启动时，它也可以单独使用：
+重启是两个电源控件弹出的确认框中的第三个选项（取消 / **重启 DSH** / 关闭），也是"切换启动方式"这一动作的最后一步；当你只想替换掉即将被取代的那次启动时，它同样可以单独使用：
 
 ```powershell
 # 双击 scripts\restart-dsh-web.vbs，或直接运行脚本
 node scripts\restart-dsh-web.mjs --delay-seconds 3
 ```
+
+确认框里的选项与脚本都走 `POST /api/dsh-power-switch/restart`；确认框**不携带模式**，因此它按当前已配置的模式重启——只替换进程，不碰桌面快捷方式。
 
 手动入口会在宿主**实际服务的端口**上停掉它，按记录的启动命令重新启动，等待该次运行输出的 token URL，然后证明本插件的浏览器半已进入新宿主提供的启动图。`--port N` 可覆盖它工作的端口、`--cli <入口>` 可在没有记录的机器上指定 CLI；`--open` / `--app` 可在之后打开窗口。
 

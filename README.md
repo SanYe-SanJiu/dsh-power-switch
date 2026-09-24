@@ -100,7 +100,7 @@ Restart DSH once after installing, then open **Settings -> Plugins**: a card lab
 
 ## Shutdown
 
-The sidebar `⏻`, the card's "Shut down DSH" button and the `POST /api/dsh-power-switch/shutdown` route behave identically:
+The sidebar `⏻`, the card's "Shut down DSH" button and the `POST /api/dsh-power-switch/shutdown` route behave identically. Both controls first show a confirmation dialog, and that dialog also offers **Restart** — see [Restart](#restart) for what it does:
 
 1. The response is sent before the exit begins, so the page can report that shutdown was requested; no response within 10 seconds is reported as a failure.
 2. The exit is graceful: sessions and settings are flushed, and the plugin tree is disposed.
@@ -112,12 +112,14 @@ In app-window mode the page closes itself once the process is gone. In normal-ta
 
 ## Restart
 
-Restarting is the last step of the mode switch, and it also stands on its own when the launch about to be replaced is the only thing you want to change:
+Restarting is the third option in the confirmation dialog both power controls open (Cancel / **Restart DSH** / Shut down), it is the last step of the mode switch, and it stands on its own when the launch about to be replaced is the only thing you want to change:
 
 ```powershell
 # double-click scripts\restart-dsh-web.vbs, or run the script directly
 node scripts\restart-dsh-web.mjs --delay-seconds 3
 ```
+
+The dialog option and the script use `POST /api/dsh-power-switch/restart`; the dialog sends **no mode**, so it restarts into whatever mode is already configured — it replaces the process and nothing else, and it never touches the desktop shortcut.
 
 The manual entry stops the host on the port it is **actually** serving on, starts the recorded launch command again, waits for the new run's token URL, and then proves this plugin's browser half made it into the boot graph that host serves. `--port N` overrides the port it works on, `--cli <entry>` names the CLI on a machine with no recorded command, and `--open` / `--app` open a window afterwards.
 

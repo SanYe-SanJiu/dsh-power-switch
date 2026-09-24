@@ -201,11 +201,18 @@ async function loadBundle() {
     assert.equal(registrations.length, 2)
     const cardSeat = registrations.find((entry) => entry.name === 'plugins.item')
     assert.notEqual(cardSeat, undefined, 'the Plugins-page card seat must be claimed')
+    const sideSeat = registrations.find((entry) => entry.name === 'sidebar.footer.action')
+    assert.notEqual(sideSeat, undefined, 'the sidebar-foot seat must be claimed')
     const options = cardSeat.register()
-    const state = { tree: undefined }
+    const sideOptions = sideSeat.register()
+    const state = { tree: undefined, side: undefined }
     const render = () => {
+      // Both seats render from the same runtime: the hook runtime keeps state per
+      // component function, so each control keeps its own state across re-renders.
       runtime.beginRender(options.render)
       state.tree = options.render({ view, ...options.inject() })
+      runtime.beginRender(sideOptions.render)
+      state.side = sideOptions.render({ view, ...sideOptions.inject() })
     }
     runtime = createHookRuntime(render)
     render()
@@ -213,6 +220,8 @@ async function loadBundle() {
       options,
       primitives,
       get tree() { return state.tree },
+      /** The sidebar-foot control's tree, so its own behaviour is observable too. */
+      get side() { return state.side },
     }
   }
 
@@ -811,6 +820,92 @@ describe('the power control', () => {
       assert.deepEqual(sent, [{ delayMs: 1500, exitCode: 0, hard: true }])
       const status = collect(mounted.tree, (node) => node.props?.['data-dsh-power-advanced-status'] === 'true')[0]
       assert.match(textOf(status), /已保存/u)
+    } finally { bundle.restore() }
+  })
+
+  it('offers a restart in the card dialog, and names no mode when it asks for one', async () => {
+    // The dialog is where the power button asks; a person who opened it meaning
+    // "give me a fresh process" should not have to go find the mode switch, which
+    // is the only other control that restarts DSH.
+    const bundle = await loadBundle()
+    try {
+      const sent = []
+      const mounted = bundle.mount('page', async (url, init) => {
+        if (String(url).includes('/restart')) {
+          sent.push(JSON.parse(String(init?.body ?? 'null')))
+          return { ok: true, status: 200, json: async () => ({ ok: true, restarting: true, launchMode: 'tab' }) }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, launchMode: 'tab', delayMs: 1000, exitCode: 0, hard: false }),
+        }
+      }, { revival: true })
+      await settle()
+      byAction(mounted.tree).props.onClick()
+      const restart = collect(mounted.tree, (node) => node.props?.['data-dsh-power-restart'] === 'true')[0]
+      assert.notEqual(restart, undefined, 'the dialog must offer a restart beside cancel and shut down')
+      restart.props.onClick()
+      await settle()
+      // An EMPTY body: the host restarts into the mode it is already configured for,
+      // so this control can never change a setting — that is the switch's job, and
+      // it also means a card whose config read failed can still restart safely.
+      assert.deepEqual(sent, [{}])
+      assert.match(textOf(statusNode(mounted.tree)), /正在重启/u)
+    } finally { bundle.restore() }
+  })
+
+  it('gives the sidebar control the same restart option', async () => {
+    const bundle = await loadBundle()
+    try {
+      const sent = []
+      const mounted = bundle.mount('page', async (url, init) => {
+        if (String(url).includes('/restart')) {
+          sent.push(JSON.parse(String(init?.body ?? 'null')))
+          return { ok: true, status: 200, json: async () => ({ ok: true, restarting: true }) }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, launchMode: 'tab', delayMs: 1000, exitCode: 0, hard: false }),
+        }
+      }, { revival: true })
+      await settle()
+      collect(mounted.side, (node) => node.props?.['data-dsh-power-shutdown'] === 'sidebar')[0].props.onClick()
+      const restart = collect(mounted.side, (node) => node.props?.['data-dsh-power-side-restart'] === 'true')[0]
+      assert.notEqual(restart, undefined, 'the sidebar dialog must offer a restart too')
+      restart.props.onClick()
+      await settle()
+      assert.deepEqual(sent, [{}])
+      const status = collect(mounted.side, (node) => node.props?.['data-dsh-power-side-status'] !== undefined)[0]
+      assert.match(textOf(status), /正在重启/u)
+    } finally { bundle.restore() }
+  })
+
+  it('reports a refused restart in the reader\'s language, from either control', async () => {
+    const bundle = await loadBundle()
+    try {
+      const mounted = bundle.mount('page', async (url) => {
+        if (String(url).includes('/restart')) {
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ ok: false, reason: 'unsupported-host', error: 'this host was not started as a dsh web server' }),
+          }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, launchMode: 'tab', delayMs: 1000, exitCode: 0, hard: false }),
+        }
+      }, { revival: true })
+      await settle()
+      collect(mounted.side, (node) => node.props?.['data-dsh-power-shutdown'] === 'sidebar')[0].props.onClick()
+      collect(mounted.side, (node) => node.props?.['data-dsh-power-side-restart'] === 'true')[0].props.onClick()
+      await settle()
+      const shown = textOf(collect(mounted.side, (node) => node.props?.['data-dsh-power-side-status'] !== undefined)[0])
+      assert.match(shown, /无法自动重启/u, 'a named refusal must be explained, not pasted')
+      assert.doesNotMatch(shown, /dsh web server/u)
     } finally { bundle.restore() }
   })
 })
