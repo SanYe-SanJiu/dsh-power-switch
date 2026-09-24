@@ -59,7 +59,7 @@
       "provides": []
     },
     "compatibility": {
-      "dsh": ">=0.1.0-rc.6",
+      "dsh": ">=0.1.6-alpha.2 <0.1.7-0 || >=0.1.7-0 <0.2.0-0",
       "node": ">=20"
     },
     "permissions": {
@@ -79,14 +79,14 @@
   ],
   "engines": {
     "node": ">=20",
-    "dsh": ">=0.1.0-rc.6"
+    "dsh": ">=0.1.6-alpha.2 <0.1.7-0 || >=0.1.7-0 <0.2.0-0"
   },
   "os": [
     "win32"
   ],
   "peerDependencies": {
-    "@deepseek-ai/dsh-host-webserver": "*",
-    "@deepseek-ai/schemastery": "*"
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.6-alpha.2 <0.1.7-0 || >=0.1.7-0 <0.2.0-0",
+    "@deepseek-ai/schemastery": ">=3.18.1 <4"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-host-webserver": {

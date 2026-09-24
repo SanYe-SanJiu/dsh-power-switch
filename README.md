@@ -18,9 +18,11 @@ App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), 
 | Item | Requirement |
 |---|---|
 | Operating system | Windows 10 or later |
-| DSH | `>=0.1.0-rc.6` (see `engines.dsh` in `package.json`) |
+| DSH | `>=0.1.6-alpha.2 <0.1.7-0 \|\| >=0.1.7-0 <0.2.0-0` (see `engines.dsh` in `package.json`) |
 | Node.js | `>=20` |
 | Windows Script Host | Required by the desktop-shortcut layer (`cscript.exe` / `wscript.exe`). It can be removed, or blocked by antivirus, Attack Surface Reduction rules or group policy — a locked-down machine is a real case, not a hypothetical one. When that happens the card says so in its own words, and the shutdown feature, the settings section and the mode switch are unaffected. |
+
+The DSH range is spelled per minor line, and that is not decoration: DSH has only ever published prereleases, and semver admits a prerelease into a range only when a comparator **on the same `major.minor.patch`** carries a prerelease of its own — so `*`, `>=0.1.0` and a bare `>=0.1.6-alpha.2` all admit no DSH build that exists. The floor is the first DSH release shipping `@deepseek-ai/dsh-plugin-manager`: before it there is no `dsh plugin install` and no `dsh.bundle` layer, so this package cannot be installed at all. Tested against `0.1.6-alpha.2` (the full suite) and the `0.1.7` line; a new DSH minor line needs another branch here.
 
 ## Install
 
@@ -247,9 +249,9 @@ Environment variables:
 
 ## Security boundary
 
-All five routes (`GET /config`, `POST /shutdown`, `POST /restart`, `POST /shortcut`, `POST /settings`) share one floor: loopback requests only. The peer must be `127.0.0.1`/`::1`, and any forwarding header (`forwarded`, `x-forwarded-for`, `x-real-ip`, `x-forwarded-host`) is refused.
+All six routes (`GET /config`, `GET /app-window`, `POST /shutdown`, `POST /restart`, `POST /shortcut`, `POST /settings`) share one floor: loopback requests only. The peer must be `127.0.0.1`/`::1`, and any forwarding header (`forwarded`, `x-forwarded-for`, `x-real-ip`, `x-forwarded-host`) is refused.
 
-The write routes (`shutdown`/`restart`/`shortcut`/`settings`) additionally require `Origin` to match `Host` exactly. The read route `GET /config` accepts a missing `Origin`, because some hosts issue their own requests without it, while still requiring loopback and still refusing forwarding headers; that difference is documented in the code.
+The write routes (`shutdown`/`restart`/`shortcut`/`settings`) additionally require `Origin` to match `Host` exactly. The read routes (`GET /config`, `GET /app-window`) accept a missing `Origin`, because some hosts issue their own requests without it, while still requiring loopback and still refusing forwarding headers; that difference is documented in the code.
 
 `POST /shortcut` is the only route that produces a file outside the package, so its body accepts exactly one fixed action (`scan` / `install` / `restore`); the directory, file name, target and arguments are all derived by the host from its own installation location, and the client cannot choose any of them.
 

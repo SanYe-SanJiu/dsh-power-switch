@@ -18,9 +18,11 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 | 项目 | 要求 |
 |---|---|
 | 操作系统 | Windows 10 或更高 |
-| DSH | `>=0.1.0-rc.6`（见 `package.json` 的 `engines.dsh`） |
+| DSH | `>=0.1.6-alpha.2 <0.1.7-0 \|\| >=0.1.7-0 <0.2.0-0`（见 `package.json` 的 `engines.dsh`） |
 | Node.js | `>=20` |
 | Windows 脚本宿主 | 桌面快捷方式层需要 `cscript.exe` / `wscript.exe`。它可能被移除，或被杀毒软件、攻击面缩减（ASR）规则、组策略拦截——受管控的机器上这是真实情形，不是假设。遇到这种情况卡片会明确说明，而关闭进程、设置表单与模式切换本身不受影响。 |
+
+这个 DSH 范围按小版本线逐段列出，并不是装饰：DSH 至今只发布过预发布版，而 semver 只允许预发布版进入「同一 `major.minor.patch` 元组上带有预发布比较符」的范围——所以 `*`、`>=0.1.0` 以及单写一个 `>=0.1.6-alpha.2` 都放不进任何一个真实存在的 DSH 版本。下界取第一个自带 `@deepseek-ai/dsh-plugin-manager` 的 DSH 版本：在那之前既没有 `dsh plugin install`，也没有 `dsh.bundle` 这一层，本包根本无法安装。实测于 `0.1.6-alpha.2`（全套测试）与 `0.1.7` 线；DSH 将来出现新的小版本线时，这里需要再加一段。
 
 ## 安装
 
@@ -242,9 +244,9 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 
 ## 安全边界
 
-五条路由（`GET /config`、`POST /shutdown`、`POST /restart`、`POST /shortcut`、`POST /settings`）的共同要求是仅接受本机 loopback 请求：对端必须为 `127.0.0.1`/`::1`；出现任何转发头（`forwarded`、`x-forwarded-for`、`x-real-ip`、`x-forwarded-host`）一律拒绝。
+六条路由（`GET /config`、`GET /app-window`、`POST /shutdown`、`POST /restart`、`POST /shortcut`、`POST /settings`）的共同要求是仅接受本机 loopback 请求：对端必须为 `127.0.0.1`/`::1`；出现任何转发头（`forwarded`、`x-forwarded-for`、`x-real-ip`、`x-forwarded-host`）一律拒绝。
 
-写路由（`shutdown`/`restart`/`shortcut`/`settings`）额外要求 `Origin` 与 `Host` 完全一致。读路由 `GET /config` 允许缺少 `Origin`（部分宿主自身发起的请求不带该头），但仍要求 loopback 并拒绝转发头；该差异在代码注释中说明。
+写路由（`shutdown`/`restart`/`shortcut`/`settings`）额外要求 `Origin` 与 `Host` 完全一致。读路由（`GET /config`、`GET /app-window`）允许缺少 `Origin`（部分宿主自身发起的请求不带该头），但仍要求 loopback 并拒绝转发头；该差异在代码注释中说明。
 
 `POST /shortcut` 是唯一会在包外产生文件的路由，其请求体只接受一个固定动作（`scan` / `install` / `restore`）；目录、文件名、目标与参数均由宿主根据自身安装位置推导，客户端无法指定。
 
