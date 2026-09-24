@@ -10,11 +10,34 @@
  */
 
 import { strict as assert } from 'node:assert'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { describe, it } from 'node:test'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { after, before, describe, it } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { POWER_ROUTE } from '../src/host.js'
 import { apply, inject, name } from '../src/index.js'
+
+/**
+ * Mounting this plugin WRITES state: it records the launch mode for the next
+ * cold start, and it records the node interpreter it is running on. A test run
+ * must never overwrite the real machine's records — that would change which
+ * window the next launch opens, and which node a desktop shortcut starts — so
+ * every test in this file runs against a throwaway harness home.
+ */
+let wiringHome
+let previousHome
+before(async () => {
+  previousHome = process.env.DSH_HOME
+  wiringHome = await mkdtemp(join(tmpdir(), 'dpb-wiring-'))
+  process.env.DSH_HOME = wiringHome
+})
+after(async () => {
+  if (previousHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = previousHome
+  if (wiringHome !== undefined) await rm(wiringHome, { recursive: true, force: true })
+})
 
 /**
  * Whether the HOST-provided schema library is reachable from here.

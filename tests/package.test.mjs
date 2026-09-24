@@ -144,12 +144,25 @@ describe('generated relaunch supervisor', () => {
 
   it('imports the window-mode helpers instead of assuming they are in scope', async () => {
     const generated = await build()
-    assert.match(generated, /const \{ storedLaunchMode, openWindow, redactToken \} = await import\(/)
+    assert.match(generated, /const \{ resolveLaunchMode, openWindow, redactToken \} = await import\(/)
     const shared = await import(url('scripts/restart-shared.mjs'))
+    assert.equal(typeof shared.resolveLaunchMode, 'function')
     assert.equal(typeof shared.storedLaunchMode, 'function')
     assert.equal(typeof shared.findBrowser, 'function')
     assert.equal(typeof shared.openWindow, 'function')
     assert.equal(typeof shared.redactToken, 'function')
+  })
+
+  it('reads the launch mode through the shared resolver, never the settings document alone', async () => {
+    // DSH 0.1.7 imports `settings.yaml` into the profile once and renames it, so a
+    // reader that knows only that file answers nothing afterwards -- and a stored
+    // "app" silently becomes a tab. Both outside readers take the resolver, which
+    // falls back to the plugin's own record.
+    for (const file of ['scripts/launch-dsh.mjs', 'scripts/restart-from-inside.mjs']) {
+      const text = await readFile(at(file), 'utf8')
+      assert.match(text, /resolveLaunchMode\(/, `${file} must fall back to the plugin's own record`)
+      assert.doesNotMatch(text, /= storedLaunchMode\(/, `${file} must not read only the settings document`)
+    }
   })
 
   it('does not re-implement the window decision it shares with the other entry points', async () => {
@@ -301,6 +314,55 @@ describe('generated relaunch supervisor', () => {
     // A missing document is also "no opinion", not a crash. The name below is
     // deliberately one that does not exist — do NOT "fix" this by creating it.
     assert.equal(shared.storedLaunchMode(at('tests/fixtures/settings-absent-on-purpose.yaml')), null)
+  })
+
+  /**
+   * The plugin's own mode record, which is what keeps a cold start honest on a
+   * host with no settings document.
+   *
+   * DSH 0.1.7 retired `settings.yaml`: it is imported into the active profile
+   * once and renamed, so a reader that knows only that file answers nothing and a
+   * stored "app" silently opens a tab on the next launch. The plugin writes its
+   * own record, and every outside reader prefers an explicit document over it.
+   */
+  it('records the launch mode itself, and lets an explicit document win', async () => {
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    const home = await mkdtemp(join(tmpdir(), 'dpb-home-'))
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      assert.equal(shared.readRecordedLaunchMode(), null, 'nothing recorded yet')
+      const file = shared.writeRecordedLaunchMode('app')
+      assert.match(file, /storages[/\\]dsh-power-switch[/\\]launch-mode\.txt$/u)
+      assert.equal(await readFile(file, 'utf8'), 'app\n')
+      assert.equal(shared.readRecordedLaunchMode(), 'app')
+      // Anything that is not a mode is not a mode.
+      await writeFile(file, 'kiosk\n', 'utf8')
+      assert.equal(shared.readRecordedLaunchMode(), null)
+      // A document with an opinion wins; the record answers when there is none.
+      await writeFile(file, 'app\n', 'utf8')
+      await writeFile(shared.settingsPath(), 'dsh-power-switch:\n  launchMode: tab\n', 'utf8')
+      assert.equal(shared.resolveLaunchMode(), 'tab')
+      await rm(shared.settingsPath(), { force: true })
+      assert.equal(shared.resolveLaunchMode(), 'app')
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('writes that record from the host half, and speaks both settings models', async () => {
+    const host = await readFile(at('src/index.js'), 'utf8')
+    // Written when the choice is made, mirrored whenever the store publishes, and
+    // seeded once so a host without a settings document still has an answer.
+    assert.match(host, /writeRecordedLaunchMode\(mode\)/)
+    assert.match(host, /writeRecordedLaunchMode\(next\.launchMode\)/)
+    assert.match(host, /readRecordedLaunchMode\(\) === null/)
+    // Both models: registered namespaces (0.1.6) and generated forms (0.1.7).
+    assert.match(host, /typeof settings\.register !== 'function'/)
+    assert.match(host, /function installGeneratedForm/)
+    assert.match(host, /settings\.update\(row\.ns, patch\)/)
   })
 
   /**

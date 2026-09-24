@@ -380,7 +380,7 @@ process.on('unhandledRejection', (error) => { reportCrash('unhandled rejection',
  * host refuses to exit and keeps the service up -- instead of going down with
  * nobody left to bring it back.
  */
-const { storedLaunchMode, openWindow, redactToken } = await import(${JSON.stringify(sharedUrl)})
+const { resolveLaunchMode, openWindow, redactToken } = await import(${JSON.stringify(sharedUrl)})
 const settingsFile = ${JSON.stringify(settingsFile)}
 
 /**
@@ -601,7 +601,10 @@ log(verified ? 'VERIFIED: ' + bundleId + '/client.js is in the boot payload' : '
 // launcher makes the same choice, and two copies of "what does app mode mean" is
 // how a mode works on one path and silently not on another.
 const modeFromEnv = process.env.DSH_POWER_SWITCH_LAUNCH_MODE
-const modeFromStore = storedLaunchMode(settingsFile)
+// Document first, then the plugin's own record: DSH 0.1.7 retired the settings
+// document, and a supervisor that read only that file opened a tab for a stored
+// "app" -- the same silent downgrade the desktop launcher had.
+const modeFromStore = resolveLaunchMode(settingsFile)
 const mode = modeFromEnv === 'app' || modeFromEnv === 'tab' ? modeFromEnv : (modeFromStore ?? 'tab')
 // Logged unconditionally: the whole decision is three inputs wide, and when it
 // goes wrong the question is always "which one won".

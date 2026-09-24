@@ -45,10 +45,10 @@ import {
   readRecordedTokenUrl,
   redactToken,
   resolveLaunchCommand,
+  resolveLaunchMode,
   resolveProbePort,
   settingsPath,
   stateDir,
-  storedLaunchMode,
   tokenUrlPattern,
 } from './restart-shared.mjs'
 
@@ -295,7 +295,10 @@ const settle = () => new Promise((resolve) => { setTimeout(resolve, 400) })
 
 log(`harness state: ${STATE_DIR}`)
 
-const stored = storedLaunchMode(settingsPath())
+// The settings document first, then the plugin's own record: a host on DSH 0.1.7
+// has no settings document at all (it is imported into the profile and renamed),
+// and reading only that file made a stored "app" silently become a tab.
+const stored = resolveLaunchMode(settingsPath())
 const mode = options.mode ?? stored ?? 'tab'
 log(`window mode: using "${mode}" (stored: ${String(stored)}, forced: ${String(options.mode)})`)
 

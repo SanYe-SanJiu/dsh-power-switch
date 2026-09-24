@@ -113,6 +113,14 @@ In app-window mode the page closes itself once the process is gone. In normal-ta
 
 One press of the card's switch does three things: it saves the setting, updates the desktop shortcut, and restarts DSH. The setting is written to the `dsh-power-switch` section of `$DSH_HOME/settings.yaml` and to the composition entry as well, so the choice survives a restart even when the host serves no settings provider.
 
+### It works on both settings models
+
+DSH 0.1.7 replaced the plugin settings model: `ctx.settings` became a generated-forms service (`describe` / `update`) with no `register` / `installSection`, and `settings.yaml` was retired — it is imported into the active profile once and renamed. Neither change breaks this plugin:
+
+- the persistence path is **detected, not version-sniffed**: a host that still has the registered-namespace API is written through its write scope, and a host that has the newer service is written through `update` for this plugin's own entry, found by its live value rather than by a guessed id;
+- the choice is also recorded by the plugin itself, in `launch-mode.txt`, and every process that runs **outside** the host reads that record — the desktop launcher, the restart helper and the supervisor. So the mode survives a cold start even on a host whose settings document is gone, which is exactly the case where "I switched to the app window and the next start was a tab" would otherwise come back;
+- the configuration form is the one thing that differs: on 0.1.7 it is the host's generated form for this plugin's entry, and when the host generates none the card's own controls still switch and record the mode.
+
 ### It refuses to restart when that cannot be done safely
 
 The restart helper must first confirm the takeover to the host, and only then does the host exit; when that confirmation does not arrive, the route answers 500 and keeps serving. Three refusal reasons each have a dedicated line on the card:
@@ -155,6 +163,7 @@ Runtime state lives in **`$DSH_HOME/storages/dsh-power-switch/`**, never inside 
 | `restart-dsh.log` | Diagnostic log shared by the plugin, the restart helper and the supervisor |
 | `boot.json` | The most recent host launch command (used by the launcher and the supervisor) |
 | `token-url.txt` | The authenticated URL the host recorded for the current run (how the helper and the launcher identify the serving process) |
+| `launch-mode.txt` | The mode the next launch should use, recorded by the plugin itself. It is what a cold start reads on a DSH whose settings document no longer exists (0.1.7), and an explicit settings document always wins over it |
 | `node-path.txt` | The node.exe path the host is running on; both `.vbs` wrappers read it, so a Node installed through nvm/fnm/volta or an app store can still launch DSH from the shortcut |
 | `dsh-web.<stamp>.log` | The stdout of each host this plugin started, including that run's token URL |
 | `shortcut-backup.txt` | The original shortcut recorded before it was adopted, for restoring it |

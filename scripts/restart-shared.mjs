@@ -414,6 +414,63 @@ export function storedLaunchMode(settingsFile) {
 }
 
 /**
+ * The plugin's OWN record of the launch mode, under the state directory.
+ *
+ * It exists because the launch mode cannot live only in DSH's settings store.
+ * DSH 0.1.7 retired the settings document: it is imported once into the active
+ * profile and renamed, so `storedLaunchMode(settingsPath())` afterwards answers
+ * nothing — and the launcher, the helper and the supervisor would every one of
+ * them fall back to a tab, i.e. "I switched to the app window and the next start
+ * was a tab again". The host writes this file whenever the choice is made or
+ * published, and every reader outside the host prefers the settings document (an
+ * explicit edit) and falls back to this.
+ * @returns the absolute path to `launch-mode.txt`.
+ */
+export function launchModePath() {
+  return join(stateDir(), 'launch-mode.txt')
+}
+
+/**
+ * The mode this plugin recorded for the next launch, or null.
+ * @returns `'app'`, `'tab'`, or null when nothing usable was recorded.
+ */
+export function readRecordedLaunchMode() {
+  try {
+    const text = readFileSync(launchModePath(), 'utf8').trim()
+    return text === 'app' || text === 'tab' ? text : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Record the mode for the next launch, for the readers that run outside the host.
+ * @param mode - `'app'` or `'tab'`; anything else is recorded as `'tab'`.
+ * @returns the path written.
+ */
+export function writeRecordedLaunchMode(mode) {
+  const value = mode === 'app' ? 'app' : 'tab'
+  const dir = ensureStateDir()
+  const file = join(dir, 'launch-mode.txt')
+  writeFileSync(file, `${value}\n`, 'utf8')
+  return file
+}
+
+/**
+ * The launch mode a process OUTSIDE the host should use.
+ *
+ * The settings document comes first, because that is where an explicit choice
+ * lands on a host that still has one — including one made in a form the host
+ * generates itself. Then the plugin's own record, which is the only source left
+ * on a host whose settings document is gone (DSH 0.1.7) or was never written.
+ * @param settingsFile - the settings document to read; the harness one by default.
+ * @returns `'app'`, `'tab'`, or null when neither source says anything.
+ */
+export function resolveLaunchMode(settingsFile = settingsPath()) {
+  return storedLaunchMode(settingsFile) ?? readRecordedLaunchMode()
+}
+
+/**
  * Every Chromium-family executable worth trying, most likely first.
  *
  * PER-USER FIRST, and that is not a nicety: Chrome or Edge installed without
