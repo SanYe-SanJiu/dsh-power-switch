@@ -57,6 +57,7 @@ pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch
 - `add` 之后的参数原样转发给 pnpm，因此 npm 包名、`github:owner/repo[#ref]`、`link:路径` 与 tarball URL 均可使用。相对路径（`./x`、`../x`、`link:../x`）以执行命令时的工作目录为基准解析，而非以 profile 目录为基准。
 - 安装完成后，DSH 会自动将该包加入 profile 的 `dsh.profile.bundles`（该包声明了 `dsh.bundle.patch`），无需手工编辑 JSON。未声明 bundle patch 的包会收到"仅作为普通依赖安装"的提示。
 - 仓库中包含构建产物 `lib/`，因此从 GitHub 安装不需要构建步骤，也不会触发 pnpm 的 allowBuilds 拦截。
+- 包自带展示元数据，格式按 DSH 0.1.7 的读法：`package.json.icon`（清单相对路径的 SVG）与 `locale/<语言>.json` 里的 `meta` 块（插件列表显示的标题与简介）。两者都通过 `exports` 导出（`./locale/*.json`）以便解析器取到；更早的 DSH 版本会直接忽略这些字段。
 
 ### 安装失败时的两种情形
 
@@ -179,6 +180,8 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 | `exitCode` | `0` | 进程退出码 |
 | `hard` | `false` | 跳过优雅退出，直接结束进程 |
 
+`launchMode` 由卡片切换；其余三项在卡片自带的**高级设置**块里修改，写入状态目录的 `settings.json`。该块存在的原因：在生成式设置表单的 DSH（0.1.7）上，未声明 schema 的插件拿不到任何表单，没有它这三项就只能手改 profile patch。若宿主仍提供"注册命名空间"那套设置 API，同一次保存也会写入设置文档，使两个界面不会各说各话；最终以记录值为准，删除 `settings.json` 即把决定权交回 loader row 的 `config:` 与设置文档。
+
 卡片的关闭按钮请求 700ms（使界面更快响应）；`delayMs` 为宿主的默认值。
 
 环境变量：
@@ -193,9 +196,9 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 
 ## 安全边界
 
-四条路由（`GET /config`、`POST /shutdown`、`POST /restart`、`POST /shortcut`）的共同要求是仅接受本机 loopback 请求：对端必须为 `127.0.0.1`/`::1`；出现任何转发头（`forwarded`、`x-forwarded-for`、`x-real-ip`、`x-forwarded-host`）一律拒绝。
+五条路由（`GET /config`、`POST /shutdown`、`POST /restart`、`POST /shortcut`、`POST /settings`）的共同要求是仅接受本机 loopback 请求：对端必须为 `127.0.0.1`/`::1`；出现任何转发头（`forwarded`、`x-forwarded-for`、`x-real-ip`、`x-forwarded-host`）一律拒绝。
 
-写路由（`shutdown`/`restart`/`shortcut`）额外要求 `Origin` 与 `Host` 完全一致。读路由 `GET /config` 允许缺少 `Origin`（部分宿主自身发起的请求不带该头），但仍要求 loopback 并拒绝转发头；该差异在代码注释中说明。
+写路由（`shutdown`/`restart`/`shortcut`/`settings`）额外要求 `Origin` 与 `Host` 完全一致。读路由 `GET /config` 允许缺少 `Origin`（部分宿主自身发起的请求不带该头），但仍要求 loopback 并拒绝转发头；该差异在代码注释中说明。
 
 `POST /shortcut` 是唯一会在包外产生文件的路由，其请求体只接受一个固定动作（`scan` / `install` / `restore`）；目录、文件名、目标与参数均由宿主根据自身安装位置推导，客户端无法指定。
 

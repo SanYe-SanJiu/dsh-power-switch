@@ -779,4 +779,38 @@ describe('the power control', () => {
       assert.equal(bySwitch(mounted.tree).props.disabled, false)
     } finally { bundle.restore() }
   })
+
+  it('edits the advanced settings through the host, since 0.1.7 has no form', async () => {
+    // DSH 0.1.7 generates settings forms and a plugin that declares no schema
+    // gets none, so without this block `delayMs` / `exitCode` / `hard` would be
+    // editable only by hand-editing the profile patch.
+    const bundle = await loadBundle()
+    try {
+      const sent = []
+      const mounted = bundle.mount('page', async (url, init) => {
+        if (String(url).includes('/settings')) {
+          sent.push(JSON.parse(String(init?.body ?? '{}')))
+          return { ok: true, status: 200, json: async () => ({ ok: true, settings: { delayMs: 1500, exitCode: 0, hard: true } }) }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, launchMode: 'tab', delayMs: 1000, exitCode: 0, hard: false }),
+        }
+      }, { revival: true })
+      await settle()
+      const delay = collect(mounted.tree, (node) => node.props?.['data-dsh-power-delay'] === 'true')[0]
+      assert.notEqual(delay, undefined, 'the advanced block appears once the host has reported the values')
+      assert.equal(delay.props.value, '1000')
+      delay.props.onChange({ target: { value: '1500' } })
+      collect(mounted.tree, (node) => node.props?.['data-dsh-power-hard'] === 'true')[0]
+        .props.onChange({ target: { checked: true } })
+      collect(mounted.tree, (node) => node.props?.['data-dsh-power-save-advanced'] === 'true')[0].props.onClick()
+      await settle()
+      // One save carries every field, so a partly-typed form cannot half-apply.
+      assert.deepEqual(sent, [{ delayMs: 1500, exitCode: 0, hard: true }])
+      const status = collect(mounted.tree, (node) => node.props?.['data-dsh-power-advanced-status'] === 'true')[0]
+      assert.match(textOf(status), /已保存/u)
+    } finally { bundle.restore() }
+  })
 })

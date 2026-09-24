@@ -22,23 +22,27 @@ import {
   logPath,
   openWindow,
   readRecordedLaunchMode,
+  readRecordedSettings,
   resolveLaunchMode,
   settingsPath,
   stateDir,
   writeBootRecord,
   writeNodePath,
   writeRecordedLaunchMode,
+  writeRecordedSettings,
   writeRecordedTokenUrl,
 } from '../scripts/restart-shared.mjs'
 import {
   CONFIG_ROUTE,
   POWER_ROUTE,
   RESTART_ROUTE,
+  SETTINGS_ROUTE,
   SHORTCUT_ROUTE,
   createConfigHandler,
   createExitResponder,
   createPowerHandler,
   createRestartHandler,
+  createSettingsHandler,
   createShortcutHandler,
   chooseShortcutAction,
   parseShortcutResult,
@@ -148,8 +152,21 @@ export const inject = ['webServer']
  * @param timings - test seam for the two exit timings; production uses defaults.
  */
 export function apply(ctx, config = {}, timings = {}) {
+  /**
+   * The effective configuration: the composition's row config (or the last
+   * settings section the host published), overlaid with what the card recorded.
+   *
+   * The recorded layer wins — the same precedence a settings document has on
+   * 0.1.6, where a user edit outranks the row's base. It exists because DSH 0.1.7
+   * has no writable plugin settings surface for a plugin that declares no schema,
+   * which would otherwise leave `delayMs`, `exitCode` and `hard` editable only by
+   * hand-editing the profile patch.
+   * @param base - the row config, or the section the host last published.
+   * @returns the effective configuration.
+   */
+  const applyRecorded = (base) => resolveConfig({ ...(base ?? {}), ...readRecordedSettings() })
   // Mutable so a settings write reaches the next request without re-registering.
-  let current = resolveConfig(config)
+  let current = applyRecorded(config)
   /** The settings scope, once one is attached: lets the card persist a choice. */
   let scope
 
@@ -183,7 +200,7 @@ export function apply(ctx, config = {}, timings = {}) {
       ctx,
       config,
       (next) => {
-        current = next
+        current = applyRecorded(next)
         // Mirror every value the host's settings store publishes into the
         // plugin's own record, so the two can never disagree about what a cold
         // start will do — and so the record exists on a host that has no
@@ -314,6 +331,9 @@ export function apply(ctx, config = {}, timings = {}) {
    */
   const persistLaunchMode = async (mode) => {
     config.launchMode = mode
+    // `current` too: on a host whose settings write goes nowhere (or has no
+    // provider at all) the route set still has to report and act on the new mode.
+    current = applyRecorded({ ...current, launchMode: mode })
     try {
       writeRecordedLaunchMode(mode)
     } catch (error) {
@@ -381,6 +401,35 @@ export function apply(ctx, config = {}, timings = {}) {
       handler: createShortcutHandler({ run: (action) => runShortcutHelper(action, note) }),
     }),
     'dsh-power-switch: shortcut route',
+  )
+
+  // The advanced settings, editable from the card on a DSH with no writable
+  // plugin settings surface (0.1.7 generates forms and a plugin with no schema
+  // gets none). Same fence as every other write route.
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: SETTINGS_ROUTE,
+      handler: createSettingsHandler({
+        save: async (patch) => {
+          writeRecordedSettings(patch)
+          // A host with the older registered-namespace API has a real user layer
+          // (the settings document), so keep it in step: without this the form
+          // and the card could show different values for the same three fields.
+          const update = scope?.update
+          if (typeof update === 'function') {
+            try {
+              await update.call(scope, patch)
+            } catch (error) {
+              note(`could not also write the advanced settings to the settings document (${String(error?.message ?? error)})`)
+            }
+          }
+          current = applyRecorded({ ...current, ...patch })
+          return { delayMs: current.delayMs, exitCode: current.exitCode, hard: current.hard }
+        },
+      }),
+    }),
+    'dsh-power-switch: settings route',
   )
 
   sweepOldHandshakes(note)

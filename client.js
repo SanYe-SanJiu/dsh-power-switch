@@ -25,6 +25,9 @@ window.__ModuleLoader__.load({
     const CONFIG_ROUTE = '/api/dsh-power-switch/config'
     const RESTART_ROUTE = '/api/dsh-power-switch/restart'
     const SHORTCUT_ROUTE = '/api/dsh-power-switch/shortcut'
+    // DSH 0.1.7 has no writable plugin settings surface for a plugin with no
+    // declared schema, so the card writes the advanced settings itself.
+    const SETTINGS_ROUTE = '/api/dsh-power-switch/settings'
     /** How long the card keeps checking that the process really went down. */
     const REVIVE_WINDOW_MS = 15_000
     /** Pause between liveness probes. */
@@ -109,6 +112,14 @@ window.__ModuleLoader__.load({
         launchRefusedUnconfirmed: '重启助手启动了但没有确认就位，所以这次不会重启——服务保持可用。',
         launchReadRetry: '读取宿主设置失败，正在重试…',
         shortcutRefusedWsh: '系统缺少或被安全策略拦截了 Windows 脚本宿主（cscript.exe），这次没能改动桌面快捷方式。关闭进程与模式切换本身不受影响；请让管理员放行 .vbs 脚本，或手动把快捷方式指向 scripts\\launch-dsh.vbs。',
+        advancedTitle: '高级设置',
+        advancedDelay: '退出前等待（毫秒）',
+        advancedExit: '进程退出码',
+        advancedHard: '跳过优雅退出（强制结束进程）',
+        advancedSave: '保存',
+        advancedSaving: '保存中…',
+        advancedSaved: '已保存，下次退出即生效。',
+        advancedFailed: '保存失败：',
         launchUnknown: '未知',
         shortcutAdopted: '已接管桌面快捷方式：',
         shortcutCreated: '已新建桌面快捷方式：',
@@ -163,6 +174,14 @@ window.__ModuleLoader__.load({
         launchRefusedUnconfirmed: 'the relaunch helper started but never confirmed it was up, so nothing was restarted \u2014 the service stays available.',
         launchReadRetry: 'Could not read the host settings; retrying\u2026',
         shortcutRefusedWsh: 'Windows Script Host (cscript.exe) is missing, or blocked by security policy, so the desktop shortcut was not changed. Shutting down and the mode switch itself are unaffected; allow .vbs scripts, or point the shortcut at scripts\\launch-dsh.vbs yourself.',
+        advancedTitle: 'Advanced settings',
+        advancedDelay: 'Wait before exit (ms)',
+        advancedExit: 'Process exit code',
+        advancedHard: 'Skip graceful disposal (force the exit)',
+        advancedSave: 'Save',
+        advancedSaving: 'Saving\u2026',
+        advancedSaved: 'Saved. It applies to the next exit.',
+        advancedFailed: 'Could not save: ',
         launchUnknown: 'unknown',
         shortcutAdopted: 'Desktop shortcut adopted: ',
         shortcutCreated: 'Desktop shortcut created: ',
@@ -292,6 +311,42 @@ window.__ModuleLoader__.load({
 }
 .dpb-launch-value { color: var(--dsw-alias-label-primary, #111827); }
 .dpb-launch-note { color: var(--dsw-alias-label-secondary, #6b7280); }
+/* The advanced settings: three rarely-touched values, kept visually below the
+   switch so the two controls somebody actually uses stay first. */
+.dpb-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+}
+.dpb-advanced-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.dpb-advanced-label {
+  min-width: 4.5em;
+  color: var(--dsw-alias-label-secondary, #6b7280);
+}
+.dpb-advanced-input {
+  width: 7em;
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--dsw-alias-label-primary, #111827);
+  background: var(--dsw-alias-bg-base, #ffffff);
+  border: 0.5px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.16));
+  border-radius: 6px;
+}
+.dpb-advanced-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #6b7280);
+}
 /* The shutdown control in the sidebar's foot. It shares that seat -- and therefore
    that flex ROW -- with the cost plugin's budget box, so it claims no width of its
    own: flex-none, a fixed 36px square, and a label that lives in the tooltip. An
@@ -441,6 +496,17 @@ window.__ModuleLoader__.load({
       const [switching, setSwitching] = React.useState(false)
       /** What the switch did to the desktop entry, shown under it. */
       const [shortcutLines, setShortcutLines] = React.useState(null)
+      /**
+       * The advanced settings, as the host reports them.
+       *
+       * `null` means "not read yet", which keeps the block out of the card until
+       * the host has answered — an empty form would invite somebody to save a
+       * value they never saw.
+       */
+      const [advanced, setAdvanced] = React.useState(null)
+      /** Whether saving them is in flight, and what the last save said. */
+      const [savingAdvanced, setSavingAdvanced] = React.useState(false)
+      const [advancedLine, setAdvancedLine] = React.useState(null)
       /** The pending-switch recovery timer, so unmounting can cancel it. */
       const switchTimer = React.useRef(null)
       /**
@@ -657,6 +723,13 @@ window.__ModuleLoader__.load({
           const payload = await response.json().catch(() => null)
           if (!response.ok || payload?.ok !== true) throw new Error(`HTTP ${String(response.status)}`)
           setStoredMode(payload.launchMode === 'app' ? 'app' : 'tab')
+          // The same read carries the advanced settings, so the card never shows
+          // a form before it knows what the host currently uses.
+          setAdvanced({
+            delayMs: typeof payload.delayMs === 'number' ? payload.delayMs : 1000,
+            exitCode: typeof payload.exitCode === 'number' ? payload.exitCode : 0,
+            hard: payload.hard === true,
+          })
           setModeError(false)
         } catch (error) {
           // ONE retry, then a recoverable failure. A single failed read used to
@@ -674,6 +747,58 @@ window.__ModuleLoader__.load({
           setMessage(`${t('launchUnavailable')}${String(error?.message ?? error)}`)
         } finally {
           window.clearTimeout(deadline)
+        }
+      }
+
+
+      /**
+       * Change one advanced setting locally; the save button sends them all.
+       * @param patch - the field(s) the control changed.
+       */
+      const editAdvanced = (patch) => {
+        setAdvanced({ ...(advanced ?? {}), ...patch })
+        setAdvancedLine(null)
+      }
+
+      /**
+       * Save the advanced settings, so the next exit uses them.
+       *
+       * The host records them itself instead of through a settings provider,
+       * because DSH 0.1.7 generates settings forms rather than accepting a
+       * registration: a plugin that declares no schema has no writable settings
+       * surface at all, which would leave these three values editable only by
+       * hand-editing the profile patch.
+       */
+      const saveAdvanced = async () => {
+        if (advanced === null) return
+        setSavingAdvanced(true)
+        setAdvancedLine(null)
+        const controller = new AbortController()
+        const deadline = window.setTimeout(() => { controller.abort() }, CONFIG_REQUEST_TIMEOUT_MS)
+        try {
+          const response = await fetch(absoluteUrl(SETTINGS_ROUTE), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(advanced),
+            signal: controller.signal,
+          })
+          const payload = await response.json().catch(() => null)
+          if (!response.ok || payload?.ok !== true) {
+            throw new Error(String(payload?.error ?? `HTTP ${String(response.status)}`))
+          }
+          const saved = payload.settings ?? {}
+          setAdvanced({
+            delayMs: typeof saved.delayMs === 'number' ? saved.delayMs : advanced.delayMs,
+            exitCode: typeof saved.exitCode === 'number' ? saved.exitCode : advanced.exitCode,
+            hard: saved.hard === true,
+          })
+          setAdvancedLine(t('advancedSaved'))
+        } catch (error) {
+          const aborted = error?.name === 'AbortError'
+          setAdvancedLine(`${t('advancedFailed')}${aborted ? t('launchNoAnswer') : String(error?.message ?? error)}`)
+        } finally {
+          window.clearTimeout(deadline)
+          setSavingAdvanced(false)
         }
       }
 
@@ -886,6 +1011,60 @@ window.__ModuleLoader__.load({
             ? null
             : h('div', { className: 'dpb-status', 'data-dsh-power-shortcut-status': 'true' },
               ...shortcutLines.map((line, index) => h('div', { key: String(index) }, line))),
+        ),
+        // The advanced settings, on their own block: rarely touched, and on DSH
+        // 0.1.7 this block is the only way to change them from a UI at all (the
+        // host generates settings forms, and this plugin declares no schema).
+        advanced === null ? null : h('div', { className: 'dpb-advanced', 'data-dsh-power-advanced': 'true' },
+          h('span', { className: 'dpb-launch-label' }, t('advancedTitle')),
+          h('div', { className: 'dpb-advanced-row' },
+            h('label', { className: 'dpb-advanced-label', htmlFor: 'dpb-power-delay' }, t('advancedDelay')),
+            h('input', {
+              id: 'dpb-power-delay',
+              type: 'number',
+              className: 'dpb-advanced-input',
+              min: 0,
+              max: 30000,
+              step: 100,
+              value: String(advanced.delayMs),
+              'data-dsh-power-delay': 'true',
+              onChange: (event) => { editAdvanced({ delayMs: Number(event.target.value) }) },
+            }),
+          ),
+          h('div', { className: 'dpb-advanced-row' },
+            h('label', { className: 'dpb-advanced-label', htmlFor: 'dpb-power-exit' }, t('advancedExit')),
+            h('input', {
+              id: 'dpb-power-exit',
+              type: 'number',
+              className: 'dpb-advanced-input',
+              min: 0,
+              max: 255,
+              step: 1,
+              value: String(advanced.exitCode),
+              'data-dsh-power-exit': 'true',
+              onChange: (event) => { editAdvanced({ exitCode: Number(event.target.value) }) },
+            }),
+          ),
+          h('label', { className: 'dpb-advanced-check' },
+            h('input', {
+              type: 'checkbox',
+              checked: advanced.hard === true,
+              'data-dsh-power-hard': 'true',
+              onChange: (event) => { editAdvanced({ hard: event.target.checked === true }) },
+            }),
+            t('advancedHard'),
+          ),
+          h('div', { className: 'dpb-row' },
+            h(primitives.Button, {
+              variant: 'outline',
+              disabled: savingAdvanced,
+              'data-dsh-power-save-advanced': 'true',
+              onClick: () => { void saveAdvanced() },
+            }, savingAdvanced ? t('advancedSaving') : t('advancedSave')),
+          ),
+          advancedLine === null
+            ? null
+            : h('div', { className: 'dpb-status', 'data-dsh-power-advanced-status': 'true' }, advancedLine),
         ),
         phase === 'gone' ? h('p', { className: 'dpb-hint' }, t('reopenHint')) : null,
         pid === null ? null : h('p', { className: 'dpb-hint' },

@@ -33,6 +33,8 @@ import {
   shortcutVerdict,
   shouldOpenStartupWindow,
   resolveConfig,
+  createSettingsHandler,
+  parseSettingsPatch,
 } from '../src/host.js'
 
 /** A request double carrying exactly what the handler reads. */
@@ -776,6 +778,81 @@ describe('shortcutVerdict', () => {
     assert.equal(verdict.reason, undefined)
     assert.equal(verdict.error, 'the shell refused to save the shortcut')
     assert.equal(verdict.code, 4)
+  })
+})
+
+/**
+ * The advanced settings route: the surface the card writes on a DSH whose
+ * settings service has no writable plugin form (0.1.7).
+ */
+describe('parseSettingsPatch', () => {
+  it('accepts each field at its bounds', () => {
+    assert.deepEqual(parseSettingsPatch({ delayMs: 0 }).patch, { delayMs: 0 })
+    assert.deepEqual(
+      parseSettingsPatch({ delayMs: MAX_DELAY_MS, exitCode: 255, hard: true }).patch,
+      { delayMs: MAX_DELAY_MS, exitCode: 255, hard: true },
+    )
+  })
+
+  it('refuses an out-of-range value instead of clamping it', () => {
+    // Deliberately unlike the shutdown body, which clamps: there the value is
+    // read once by a route that is about to end the process, while here a person
+    // typed it and will read it back, so 30001 must not silently become 30000.
+    assert.match(parseSettingsPatch({ delayMs: MAX_DELAY_MS + 1 }).error, /delayMs/u)
+    assert.match(parseSettingsPatch({ delayMs: 1.5 }).error, /delayMs/u)
+    assert.match(parseSettingsPatch({ exitCode: 256 }).error, /exitCode/u)
+    assert.match(parseSettingsPatch({ exitCode: -1 }).error, /exitCode/u)
+    assert.match(parseSettingsPatch({ hard: 'yes' }).error, /hard/u)
+  })
+
+  it('needs at least one field it knows', () => {
+    assert.match(parseSettingsPatch({}).error, /at least one/u)
+    assert.match(parseSettingsPatch({ unknown: 1 }).error, /at least one/u)
+    assert.match(parseSettingsPatch(null).error, /object/u)
+    assert.match(parseSettingsPatch([]).error, /object/u)
+  })
+})
+
+describe('createSettingsHandler', () => {
+  const drive = async ({
+    method = 'POST',
+    headers = TRUSTED,
+    body = '{}',
+    save = async () => ({ delayMs: 1000, exitCode: 0, hard: false }),
+  } = {}) => {
+    const handler = createSettingsHandler({ save })
+    const response = makeResponse()
+    await handler(makeRequest({ method, url: '/api/dsh-power-switch/settings', headers, body }), response)
+    return response
+  }
+
+  it('saves a valid patch and answers the values the host now uses', async () => {
+    let saved = null
+    const response = await drive({
+      body: '{"delayMs":1500,"hard":true}',
+      save: async (patch) => { saved = patch; return { delayMs: 1500, exitCode: 0, hard: true } },
+    })
+    assert.deepEqual(saved, { delayMs: 1500, hard: true })
+    assert.equal(response.state.status, 200)
+    assert.deepEqual(response.json().settings, { delayMs: 1500, exitCode: 0, hard: true })
+  })
+
+  it('refuses an untrusted request, a wrong method and a bad body', async () => {
+    assert.equal((await drive({ headers: { ...TRUSTED, origin: 'http://evil.example' } })).state.status, 403)
+    assert.equal((await drive({ headers: { ...TRUSTED, 'x-forwarded-for': '10.0.0.1' } })).state.status, 403)
+    assert.equal((await drive({ method: 'GET' })).state.status, 405)
+    assert.equal((await drive({ body: '{"delayMs":"soon"}' })).state.status, 400)
+    assert.equal((await drive({ body: '{"exitCode":999}' })).state.status, 400)
+  })
+
+  it('answers a save failure instead of pretending it was saved', async () => {
+    const response = await drive({
+      body: '{"hard":true}',
+      save: async () => { throw new Error('the state directory is read-only') },
+    })
+    assert.equal(response.state.status, 500)
+    assert.equal(response.json().ok, false)
+    assert.match(response.json().error, /read-only/u)
   })
 })
 

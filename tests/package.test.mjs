@@ -352,6 +352,32 @@ describe('generated relaunch supervisor', () => {
     }
   })
 
+  it('records the advanced settings itself, and ignores what it cannot validate', async () => {
+    const shared = await import(url('scripts/restart-shared.mjs'))
+    const home = await mkdtemp(join(tmpdir(), 'dpb-home-'))
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      assert.deepEqual(shared.readRecordedSettings(), {}, 'nothing recorded yet')
+      assert.match(shared.recordedSettingsPath(), /storages[/\\]dsh-power-switch[/\\]settings\.json$/u)
+      shared.writeRecordedSettings({ delayMs: 1500 })
+      assert.deepEqual(shared.readRecordedSettings(), { delayMs: 1500 })
+      // A patch MERGES: the card sends one field per save, not the whole form.
+      shared.writeRecordedSettings({ hard: true })
+      assert.deepEqual(shared.readRecordedSettings(), { delayMs: 1500, hard: true })
+      // The file sits under the user's home, so a hand-edited one must degrade
+      // field by field rather than feed a bad number into an exit.
+      await writeFile(shared.recordedSettingsPath(), '{"delayMs":"soon","exitCode":7}', 'utf8')
+      assert.deepEqual(shared.readRecordedSettings(), { exitCode: 7 })
+      await writeFile(shared.recordedSettingsPath(), 'not json at all', 'utf8')
+      assert.deepEqual(shared.readRecordedSettings(), {})
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
   it('writes that record from the host half, and speaks both settings models', async () => {
     const host = await readFile(at('src/index.js'), 'utf8')
     // Written when the choice is made, mirrored whenever the store publishes, and
@@ -363,6 +389,10 @@ describe('generated relaunch supervisor', () => {
     assert.match(host, /typeof settings\.register !== 'function'/)
     assert.match(host, /function installGeneratedForm/)
     assert.match(host, /settings\.update\(row\.ns, patch\)/)
+    // The advanced settings travel the same way, and outrank the row config.
+    assert.match(host, /writeRecordedSettings\(patch\)/)
+    assert.match(host, /const applyRecorded = \(base\) => resolveConfig\(\{ \.\.\.\(base \?\? \{\}\), \.\.\.readRecordedSettings\(\) \}\)/)
+    assert.match(host, /path: SETTINGS_ROUTE/u)
   })
 
   /**
@@ -573,6 +603,34 @@ describe('desktop shortcut placement', () => {
     assert.match(launcher, /--home/)
     assert.match(launcher, /shell\.Environment\("Process"\)\("DSH_HOME"\) = homeDir/)
     assert.match(launcher, /If envHome = "" And bakedHome <> "" Then/)
+  })
+
+  /**
+   * The plugin's display metadata, in the form DSH 0.1.7's reader expects.
+   *
+   * Measured against `app-boot`'s implementation (`readPluginMeta`): the icon is
+   * `package.json.icon` — a MANIFEST-RELATIVE path, one of SVG/PNG/JPEG/WebP,
+   * inside the manifest directory after realpath, at most 256 KiB — and localized
+   * title/description come from `locale/<language>.json`, whose `meta` block is
+   * read through Node exports (so `./locale/*.json` must be exported). The
+   * English file is the entry point: without it no other language is read.
+   */
+  it('declares display metadata the way DSH reads it', async () => {
+    const manifest = JSON.parse(await readFile(at('package.json'), 'utf8'))
+    assert.equal(manifest.icon, './icon.svg')
+    assert.equal(manifest.dsh.manifestVersion, 1)
+    assert.equal(manifest.exports['./locale/*.json'], './locale/*.json')
+    const icon = await readFile(at('icon.svg'))
+    assert.ok(icon.length <= 256 * 1024, 'the icon must stay under the 256 KiB the reader admits')
+    const english = JSON.parse(await readFile(at('locale/en.json'), 'utf8'))
+    assert.equal(typeof english.meta.title, 'string')
+    assert.equal(typeof english.meta.description, 'string')
+    const chinese = JSON.parse(await readFile(at('locale/zh.json'), 'utf8'))
+    assert.equal(typeof chinese.meta.title, 'string')
+    assert.equal(typeof chinese.meta.description, 'string')
+    // Both must actually be published, or the reader cannot resolve them.
+    assert.ok(manifest.files.includes('icon.svg'))
+    assert.ok(manifest.files.includes('locale'))
   })
 
   it('never lets the card choose a target, a path or a name', async () => {

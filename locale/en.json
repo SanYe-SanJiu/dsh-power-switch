@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSH power switch",
+    "description": "One-click shutdown in the sidebar, plus an app-window / normal-tab launch switch that also fixes the desktop shortcut."
+  }
+}

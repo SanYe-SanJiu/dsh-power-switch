@@ -471,6 +471,54 @@ export function resolveLaunchMode(settingsFile = settingsPath()) {
 }
 
 /**
+ * Where the plugin records the advanced settings the card can change.
+ *
+ * A second file rather than a field in `launch-mode.txt`: that one is deliberately
+ * one plain line, because its readers are Node processes that should not need a
+ * JSON parser for the single value a cold start depends on.
+ * @returns the absolute path to `settings.json`.
+ */
+export function recordedSettingsPath() {
+  return join(stateDir(), 'settings.json')
+}
+
+/**
+ * The advanced settings recorded by the card, or an empty object.
+ *
+ * Every field is optional and re-validated on read: the file lives under the
+ * user's home, so a hand-edited or truncated one has to degrade to "no opinion"
+ * rather than feed a bad number into an exit.
+ * @returns `{ delayMs?, exitCode?, hard? }`.
+ */
+export function readRecordedSettings() {
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(recordedSettingsPath(), 'utf8'))
+  } catch {
+    return {}
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  const recorded = {}
+  if (Number.isInteger(parsed.delayMs) && parsed.delayMs >= 0) recorded.delayMs = parsed.delayMs
+  if (Number.isInteger(parsed.exitCode) && parsed.exitCode >= 0) recorded.exitCode = parsed.exitCode
+  if (typeof parsed.hard === 'boolean') recorded.hard = parsed.hard
+  return recorded
+}
+
+/**
+ * Merge a patch into the recorded advanced settings.
+ * @param patch - `{ delayMs?, exitCode?, hard? }`, already validated by the route.
+ * @returns the path written.
+ */
+export function writeRecordedSettings(patch) {
+  const merged = { ...readRecordedSettings(), ...patch }
+  const dir = ensureStateDir()
+  const file = join(dir, 'settings.json')
+  writeFileSync(file, `${JSON.stringify(merged, null, 2)}\n`, 'utf8')
+  return file
+}
+
+/**
  * Every Chromium-family executable worth trying, most likely first.
  *
  * PER-USER FIRST, and that is not a nicety: Chrome or Edge installed without

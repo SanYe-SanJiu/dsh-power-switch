@@ -60,6 +60,7 @@ Notes:
 - The arguments after `add` are forwarded to pnpm verbatim, so an npm package name, a `github:owner/repo[#ref]` spec, a `link:path` and a tarball URL are all accepted. A relative path (`./x`, `../x`, `link:../x`) is resolved against the working directory the command is run from, not against the profile directory.
 - Installation registers the bundle automatically: DSH appends the package to the profile's `dsh.profile.bundles` because the package declares `dsh.bundle.patch`, so no JSON editing is needed. A package without a bundle patch is reported as installed only as a plain dependency.
 - The built host artifact `lib/` is committed with the repository, so a GitHub install needs no build step and never triggers pnpm's allowBuilds prompt.
+- The package carries its own display metadata, in the form DSH 0.1.7 reads it: `package.json.icon` (a manifest-relative SVG) and `locale/<language>.json` files whose `meta` block holds the title and description shown in the Plugins list. Both are exported (`./locale/*.json`) so the reader can resolve them; on earlier DSH versions the fields are simply ignored.
 
 ### When the install fails: two cases
 
@@ -164,6 +165,7 @@ Runtime state lives in **`$DSH_HOME/storages/dsh-power-switch/`**, never inside 
 | `boot.json` | The most recent host launch command (used by the launcher and the supervisor) |
 | `token-url.txt` | The authenticated URL the host recorded for the current run (how the helper and the launcher identify the serving process) |
 | `launch-mode.txt` | The mode the next launch should use, recorded by the plugin itself. It is what a cold start reads on a DSH whose settings document no longer exists (0.1.7), and an explicit settings document always wins over it |
+| `settings.json` | The advanced settings changed from the card (`delayMs`, `exitCode`, `hard`); they override the loader row's `config:` |
 | `node-path.txt` | The node.exe path the host is running on; both `.vbs` wrappers read it, so a Node installed through nvm/fnm/volta or an app store can still launch DSH from the shortcut |
 | `dsh-web.<stamp>.log` | The stdout of each host this plugin started, including that run's token URL |
 | `shortcut-backup.txt` | The original shortcut recorded before it was adopted, for restoring it |
@@ -182,6 +184,8 @@ The card's configuration page, or the loader row's `config:`:
 | `exitCode` | `0` | Process exit code |
 | `hard` | `false` | Skip the graceful path and end the process at once |
 
+`launchMode` is switched from the card. The other three are edited from the card's own **Advanced settings** block, which writes them to `settings.json` in the state directory. That block exists because it is the only UI for those three on a DSH that generates settings forms (0.1.7) — a plugin without a declared schema gets no generated form, so without it they would be editable only by hand-editing the profile patch. On a host that still has the registered-namespace settings API, the same save is written to the settings document as well, so the two surfaces cannot disagree; the recorded value is the one that governs, and deleting `settings.json` hands the decision back to the loader row's `config:` and the settings document.
+
 The card's shutdown button requests 700 ms so the interface reacts sooner; `delayMs` is the host's own default.
 
 Environment variables:
@@ -196,9 +200,9 @@ Environment variables:
 
 ## Security boundary
 
-All four routes (`GET /config`, `POST /shutdown`, `POST /restart`, `POST /shortcut`) share one floor: loopback requests only. The peer must be `127.0.0.1`/`::1`, and any forwarding header (`forwarded`, `x-forwarded-for`, `x-real-ip`, `x-forwarded-host`) is refused.
+All five routes (`GET /config`, `POST /shutdown`, `POST /restart`, `POST /shortcut`, `POST /settings`) share one floor: loopback requests only. The peer must be `127.0.0.1`/`::1`, and any forwarding header (`forwarded`, `x-forwarded-for`, `x-real-ip`, `x-forwarded-host`) is refused.
 
-The write routes (`shutdown`/`restart`/`shortcut`) additionally require `Origin` to match `Host` exactly. The read route `GET /config` accepts a missing `Origin`, because some hosts issue their own requests without it, while still requiring loopback and still refusing forwarding headers; that difference is documented in the code.
+The write routes (`shutdown`/`restart`/`shortcut`/`settings`) additionally require `Origin` to match `Host` exactly. The read route `GET /config` accepts a missing `Origin`, because some hosts issue their own requests without it, while still requiring loopback and still refusing forwarding headers; that difference is documented in the code.
 
 `POST /shortcut` is the only route that produces a file outside the package, so its body accepts exactly one fixed action (`scan` / `install` / `restore`); the directory, file name, target and arguments are all derived by the host from its own installation location, and the client cannot choose any of them.
 
