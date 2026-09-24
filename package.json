@@ -1,6 +1,6 @@
 {
   "name": "dsh-power-switch",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "DeepSeek Harness plugin (Windows only): a one-click shutdown button in the sidebar that leaves through DSH's own graceful exit, plus an app-window / normal-tab switch on the Settings -> Plugins card that saves the mode, fixes the desktop shortcut and restarts DSH — replaying the command the running host recorded for itself, and refusing the restart rather than risking an outage. 在侧边栏一键关闭 DSH 进程（走官方优雅退出通道），并在设置 → 插件页切换「应用窗口 / 普通标签页」：保存设置 → 改好桌面快捷方式 → 重启 DSH（重放宿主自己记录的真实启动命令；无法安全重启时明确拒绝，不会把服务丢下）。",
   "keywords": [
     "dsh",
