@@ -18,6 +18,7 @@ import { after, before, describe, it } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { POWER_ROUTE } from '../src/host.js'
 import { apply, inject, name } from '../src/index.js'
+import { readRecordedLaunchMode, writeRecordedLaunchMode } from '../scripts/restart-shared.mjs'
 
 /**
  * Mounting this plugin WRITES state: it records the launch mode for the next
@@ -150,6 +151,35 @@ describe('host plugin wiring', () => {
   it('announces the plugin name and its one required service', () => {
     assert.equal(name, 'dsh-power-switch')
     assert.deepEqual(inject, ['webServer'])
+  })
+
+  it('keeps the recorded mode when the host generates no form for this plugin', async () => {
+    // The 0.1.7 shape exactly: no `register`, only `describe`/`update`, and no form
+    // for this plugin because its row declares no `config:`. That branch publishes the
+    // RAW LOADER ROW — and mirroring it overwrote the record on every host start, so a
+    // mode set to `app` reverted to `tab`: it survived the switch (which also passes
+    // the mode down as an environment variable) and never a cold start.
+    const { ctx } = makeContext({ settings: { describe: () => [], update: () => {} } })
+    writeRecordedLaunchMode('app')
+    apply(ctx, {})
+    await new Promise((resolve) => { setTimeout(resolve, 40) })
+    assert.equal(readRecordedLaunchMode(), 'app', 'the row default must not clobber a recorded choice')
+  })
+
+  it('still follows a form value the host does track for this entry', async () => {
+    // The other side of the same flag: a generated form (or a 0.1.6 settings section)
+    // IS a user layer, so the record follows it — that is the only reason the mirror
+    // exists.
+    const { ctx } = makeContext({
+      settings: {
+        describe: () => [{ ns: 'power-switch', value: { launchMode: 'app' } }],
+        update: () => {},
+      },
+    })
+    writeRecordedLaunchMode('tab')
+    apply(ctx, {})
+    await new Promise((resolve) => { setTimeout(resolve, 40) })
+    assert.equal(readRecordedLaunchMode(), 'app')
   })
 
   it('registers the shutdown, configuration, restart, shortcut and settings routes', () => {

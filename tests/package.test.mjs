@@ -385,6 +385,12 @@ describe('generated relaunch supervisor', () => {
     assert.match(host, /writeRecordedLaunchMode\(mode\)/)
     assert.match(host, /writeRecordedLaunchMode\(next\.launchMode\)/)
     assert.match(host, /readRecordedLaunchMode\(\) === null/)
+    // …but the mirror is FLAGGED, because one publish is nobody's choice: the
+    // no-generated-form fallback sends the raw loader row, and mirroring that one
+    // overwrote the mode the card had just recorded at every host start.
+    assert.match(host, /const publishFromStore = \(next, mirrors = true\) => \{/)
+    assert.match(host, /if \(mirrors !== true\) return/)
+    assert.match(host, /publish\(resolveConfig\(config, undefined\), false\)/)
     // Both models: registered namespaces (0.1.6) and generated forms (0.1.7).
     assert.match(host, /typeof settings\.register !== 'function'/)
     assert.match(host, /function installGeneratedForm/)
