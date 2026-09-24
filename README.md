@@ -24,7 +24,7 @@ App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), 
 
 ## Install
 
-Pin a released tag. The three commands below are exactly equivalent — they differ only in how DSH is invoked:
+ The three commands below are exactly equivalent — they differ only in how DSH is invoked:
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
@@ -43,7 +43,7 @@ pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.2
 
 All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
 
-**Why the tag is part of the command.** A git install fetches the repository and runs the code it finds, and the upstream guide therefore asks authors and users to pin a commit `#<sha>`, "so a later push cannot silently change what runs". A released tag gives the same guarantee here — this project never moves one (see the notes below) — and reads better; substitute `#<commit-sha>` for the strictest form.
+
 
 Other specs:
 
@@ -125,7 +125,7 @@ DSH 0.1.7 replaced the plugin settings model: `ctx.settings` became a generated-
 
 - the persistence path is **detected, not version-sniffed**: a host that still has the registered-namespace API is written through its write scope, and a host that has the newer service is written through `update` for this plugin's own entry, found by its live value rather than by a guessed id;
 - the choice is also recorded by the plugin itself, in `launch-mode.txt`, and every process that runs **outside** the host reads that record — the desktop launcher, the restart helper and the supervisor. So the mode survives a cold start even on a host whose settings document is gone, which is exactly the case where "I switched to the app window and the next start was a tab" would otherwise come back;
-- the configuration form is the one thing that differs: on 0.1.7 it is the host's generated form for this plugin's entry, and when the host generates none the card's own controls still switch and record the mode.
+- the one difference is the settings section: on 0.1.7 a form is generated from a Loader entry's declared schema, and this plugin declares none, so there is no DSH-native settings page for it there. Everything the plugin can configure lives on the card — the launch-mode switch and the advanced settings.
 
 ### It refuses to restart when that cannot be done safely
 
