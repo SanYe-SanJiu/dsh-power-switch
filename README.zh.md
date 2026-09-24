@@ -24,6 +24,8 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ## 安装
 
+你应该先cd到deepseek harness文件夹
+
 下面三条命令完全等价，区别只在"如何调用 DSH"：
 
 ```powershell
