@@ -453,6 +453,81 @@ window.__ModuleLoader__.load({
   overflow-wrap: anywhere;
 }
 .dpb-side-status[data-phase="failed"] { color: var(--dsw-alias-label-danger, #b91c1c); }
+/* The confirmation dialog this plugin draws itself, used when the host's
+   primitives module offers no usable Modal.
+
+   It exists because window.confirm() cannot ask this question. The confirmation
+   has THREE answers -- cancel, restart, close -- and a browser confirm box has
+   exactly two buttons, so any host without a Modal silently lost the restart
+   path and fell back to a chrome dialog with no title styling, no styling of
+   its own at all, and a "确定/取消" pair that names neither action. The desktop
+   app is the case that made this real; every host can be.
+
+   Same tokens as the rest of the card, so it reads as DSH rather than as the
+   OS. (No backticks in this block: it is a template literal.) */
+.dpb-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.32);
+}
+.dpb-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  width: min(440px, calc(100vw - 32px));
+  padding: 20px;
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-base, #ffffff);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.24);
+  color: var(--dsw-alias-label-primary, #111827);
+}
+.dpb-dialog-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.dpb-dialog-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--dsw-alias-label-secondary, #6b7280);
+}
+.dpb-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+/* Deliberately the same visual language as primitives.Button in the host
+   dialog: outline for the two safe answers, primary+danger for the destructive
+   one, so the two dialogs are interchangeable rather than merely similar. */
+.dpb-dialog-button {
+  padding: 6px 14px;
+  border: 0.5px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.16));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary, #111827);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.dpb-dialog-button:hover:not(:disabled) {
+  background: var(--dsw-alias-bg-l1, rgba(0, 0, 0, 0.04));
+}
+.dpb-dialog-button:disabled { cursor: default; opacity: 0.55; }
+.dpb-dialog-button[data-variant="primary"] {
+  border-color: transparent;
+  font-weight: 500;
+}
 `
 
     /**
@@ -480,14 +555,6 @@ window.__ModuleLoader__.load({
     const hasModal = () => typeof primitives?.Modal === 'function' && typeof primitives?.Button === 'function'
 
     /**
-     * The fallback confirmation step, used only when the primitives module
-     * offers no `Modal` — a host that old must still be able to ask.
-     * @param local - the local copy sheet.
-     * @returns true when the person confirmed.
-     */
-    const askConfirm = (local) => window.confirm(`${local.dialogTitle}\n\n${local.dialogBody}`)
-
-    /**
      * Localized copy for a refusal the host NAMED.
      *
      * The host refuses instead of risking an outage, and it reports a stable
@@ -506,6 +573,73 @@ window.__ModuleLoader__.load({
       if (reason === 'helper-unavailable') return t('launchRefusedHelper')
       if (reason === 'helper-not-confirmed') return t('launchRefusedUnconfirmed')
       return null
+    }
+
+    /**
+     * The confirmation dialog this plugin draws itself.
+     *
+     * Used whenever `hasModal()` is false -- i.e. on any host whose primitives
+     * module does not offer a usable `Modal`. It carries the SAME three answers
+     * the host dialog does (cancel / restart / close), because losing the
+     * restart answer is a functional regression, not a cosmetic one: before
+     * this existed, such a host got `window.confirm`, which has two buttons and
+     * so could only ever offer cancel and close.
+     *
+     * The `data-dsh-power-*-confirm` hooks deliberately mirror the host dialog's
+     * ones, so a test or a page script finds the same answer under the same name
+     * no matter which dialog drew it. `data-dsh-power-dialog="fallback"` is the
+     * marker that says which one this is.
+     *
+     * Rendered as a fixed-position backdrop rather than through a portal: the
+     * card and the sidebar button live in slots the plugin does not own, and a
+     * portal would need a host-provided root. `position: fixed` is enough and
+     * keeps the component dependency-free.
+     * @param props - the three answers plus their copy and the hook names.
+     * @returns the dialog, or null when it is closed.
+     */
+    function FallbackConfirmDialog(props) {
+      const { open, t, confirmKey, restartKey, onCancel, onRestart, onConfirm } = props ?? {}
+      // Escape closes it, the same as the host Modal does. A click on the
+      // backdrop is NOT a cancel: this dialog asks before ending a process, and
+      // a near-miss click should not silently discard the question.
+      React.useEffect(() => {
+        if (open !== true || typeof document === 'undefined') return undefined
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') onCancel?.()
+        }
+        document.addEventListener('keydown', onKeyDown)
+        return () => { document.removeEventListener('keydown', onKeyDown) }
+      }, [open, onCancel])
+
+      if (open !== true) return null
+
+      const button = (variant, hook, label, handler) => h('button', {
+        type: 'button',
+        className: variant === 'primary' ? 'dpb-dialog-button dpb-danger' : 'dpb-dialog-button',
+        'data-variant': variant,
+        [hook]: 'true',
+        onClick: () => { handler() },
+      }, label)
+
+      return h('div', {
+        className: 'dpb-dialog-backdrop',
+        'data-dsh-power-dialog': 'fallback',
+      },
+        h('div', {
+          className: 'dpb-dialog',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': t('dialogTitle'),
+        },
+          h('h2', { className: 'dpb-dialog-title' }, t('dialogTitle')),
+          h('p', { className: 'dpb-dialog-body' }, t('dialogBody')),
+          h('div', { className: 'dpb-dialog-footer' },
+            button('outline', 'data-dsh-power-cancel', t('cancel'), onCancel),
+            button('outline', restartKey, t('restartAction'), onRestart),
+            button('primary', confirmKey, t('confirm'), onConfirm),
+          ),
+        ),
+      )
     }
 
     /**
@@ -605,7 +739,39 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Poll this page until the host stops answering, then report it.
+     * Whether a request to `url` is answered by something OTHER than this page's
+     * own document shell.
+     *
+     * `window.location.href` is the obvious liveness probe and it is wrong on any
+     * host that serves the page from a protocol the APP owns rather than from the
+     * dsh server. The desktop app is exactly that: the page's origin is
+     * `dsh-app://app/`, which Electron answers out of its own process, so the
+     * document keeps loading after the DSH host behind it has died. Probing it
+     * reported "still running" forever -- a person who HAD closed DSH was told it
+     * was still there, and the honest-looking watch was the thing lying.
+     *
+     * The plugin's own route is the right probe instead: only the DSH host serves
+     * `/dsh-power-switch/…`, so when the host is gone this route stops answering
+     * no matter which protocol the page was loaded over. It answers `405` to a
+     * `HEAD` (the route table is exact-match on the method), and any answer at
+     * all -- including a refusal -- proves the host is still up, which is exactly
+     * the question being asked.
+     * @returns true when the host answered.
+     */
+    async function hostAnswers() {
+      try {
+        const response = await fetch(absoluteUrl(CONFIG_ROUTE), {
+          method: 'HEAD',
+          cache: 'no-store',
+        })
+        return response.status !== 0
+      } catch {
+        return false
+      }
+    }
+
+    /**
+     * Poll the HOST until it stops answering, then report it.
      *
      * Both seats need the same watch for the same reason: "the host accepted the
      * request" and "the process is gone" are different moments whenever the wait
@@ -626,16 +792,7 @@ window.__ModuleLoader__.load({
         timerRef.current = window.setTimeout(() => { void probe() }, PROBE_INTERVAL_MS)
       }
       const probe = async () => {
-        let reachable = false
-        try {
-          const response = await fetch(window.location.href, { method: 'GET', cache: 'no-store' })
-          // A refused request still proves something is listening. If it is
-          // still US, disposal has not started; if it answers, a supervisor
-          // brought the service back and this page's launch token is stale.
-          reachable = response.status !== 0
-        } catch {
-          reachable = false
-        }
+        const reachable = await hostAnswers()
         if (!reachable) {
           onGone()
           return
@@ -1186,8 +1343,7 @@ window.__ModuleLoader__.load({
             disabled: busy || phase === 'done' || stopped,
             'data-dsh-power-action': 'shutdown',
             onClick: () => {
-              if (hasModal()) setConfirming(true)
-              else if (askConfirm(local)) void submit()
+              setConfirming(true)
             },
           }, phase === 'working' ? t('working') : t('action')),
           h('span', { className: 'dpb-status', 'data-phase': phase },
@@ -1346,7 +1502,15 @@ window.__ModuleLoader__.load({
               onClick: () => { void submit() },
             }, t('confirm')),
           ),
-        }) : null,
+        }) : h(FallbackConfirmDialog, {
+          open: confirming,
+          t,
+          confirmKey: 'data-dsh-power-confirm',
+          restartKey: 'data-dsh-power-restart',
+          onCancel: () => { setConfirming(false) },
+          onRestart: () => { void restartDsh() },
+          onConfirm: () => { void submit() },
+        }),
       )
       /* eslint-enable react/no-unknown-property */
     }
@@ -1522,8 +1686,7 @@ window.__ModuleLoader__.load({
           'data-state': failed ? 'failed' : 'idle',
           'data-dsh-power-shutdown': 'sidebar',
           onClick: () => {
-            if (hasModal()) setConfirming(true)
-            else if (askConfirm(local)) void submit()
+            setConfirming(true)
           },
         }, busy ? '…' : '⏻'),
         hasModal() ? h(primitives.Modal, {
@@ -1549,7 +1712,15 @@ window.__ModuleLoader__.load({
               onClick: () => { void submit() },
             }, t('confirm')),
           ),
-        }) : null,
+        }) : h(FallbackConfirmDialog, {
+          open: confirming,
+          t,
+          confirmKey: 'data-dsh-power-side-confirm',
+          restartKey: 'data-dsh-power-side-restart',
+          onCancel: () => { setConfirming(false) },
+          onRestart: () => { void restartDsh() },
+          onConfirm: () => { void submit() },
+        }),
       )
       /* eslint-enable react/no-unknown-property */
     }

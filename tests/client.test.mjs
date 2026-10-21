@@ -271,6 +271,41 @@ async function loadBundle() {
  * @param found - accumulator.
  * @returns every matching element.
  */
+/**
+ * Expand the function components in a tree the hook runtime produced.
+ *
+ * `createElement` here only builds `{ type, props }` nodes; it never calls a
+ * component function. Everything the bundle renders as a plain element type is
+ * therefore visible to `collect` as-is, but a component the bundle defines itself
+ * (the fallback dialog is one) stays an unrendered node. This walks the tree and
+ * substitutes each such node with what the component returns, so the same
+ * `collect` predicates work for both.
+ *
+ * The host's own primitives (`Button`, `Modal`) are components too, but they are
+ * NOT expanded: the stubs return `null` and expanding them would erase the very
+ * nodes the assertions look for. They are recognised by being the exact objects
+ * the bundle required, which `isPrimitive` answers for.
+ *
+ * A depth bound keeps a component that returns itself from looping forever.
+ * @param node - any element, array or primitive.
+ * @param isPrimitive - whether a component type came from the host primitives.
+ * @param depth - remaining expansion budget.
+ * @returns the same tree with local components rendered.
+ */
+function expand(node, isPrimitive = () => false, depth = 12) {
+  if (node === null || typeof node !== 'object' || depth <= 0) return node
+  if (Array.isArray(node)) return node.map((child) => expand(child, isPrimitive, depth))
+  // Intrinsic elements are strings; the hook runtime's Fragment is a symbol.
+  const isLocalComponent = typeof node.type === 'function' && isPrimitive(node.type) === false
+  if (isLocalComponent) return expand(node.type(node.props ?? {}), isPrimitive, depth - 1)
+  const props = node.props ?? {}
+  const next = {}
+  for (const [key, value] of Object.entries(props)) {
+    next[key] = value !== null && typeof value === 'object' ? expand(value, isPrimitive, depth) : value
+  }
+  return { ...node, props: next }
+}
+
 function collect(node, predicate, found = []) {
   if (node === null || typeof node !== 'object') return found
   if (Array.isArray(node)) {
@@ -672,7 +707,7 @@ describe('the power control', () => {
       // stub drops it -- which is what a dead server looks like from the page.
       let posted = false
       const mounted = bundle.mount('page', async (url) => {
-        if (String(url).startsWith('/api/')) {
+        if (String(url).includes('/shutdown')) {
           posted = true
           return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9 }) }
         }
@@ -711,7 +746,7 @@ describe('the power control', () => {
     try {
       // Same shape as the measured popup: opener set, not standalone.
       const mounted = bundle.mount('page', async (url) => {
-        if (String(url).startsWith('/api/')) {
+        if (String(url).includes('/shutdown')) {
           return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9 }) }
         }
         throw new TypeError('Failed to fetch')
@@ -739,7 +774,7 @@ describe('the power control', () => {
     try {
       // The measured app window: display-mode standalone true, opener null.
       const mounted = bundle.mount('page', async (url) => {
-        if (String(url).startsWith('/api/')) {
+        if (String(url).includes('/shutdown')) {
           return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9 }) }
         }
         throw new TypeError('Failed to fetch')
@@ -767,7 +802,7 @@ describe('the power control', () => {
       // The measured normal tab: opener null AND not standalone. This is what a
       // plain `dsh web` launch produces, and window.close() is refused there.
       const mounted = bundle.mount('page', async (url) => {
-        if (String(url).startsWith('/api/')) {
+        if (String(url).includes('/shutdown')) {
           return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9 }) }
         }
         throw new TypeError('Failed to fetch')
@@ -798,7 +833,7 @@ describe('the power control', () => {
       // The POST lands, and every probe still answers: nothing stopped. The
       // watch window is forced past its deadline so the assertion is immediate.
       const mounted = bundle.mount('page', async (url) => {
-        if (String(url).startsWith('/api/')) {
+        if (String(url).includes('/shutdown')) {
           return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9 }) }
         }
         return { ok: true, status: 200, json: async () => ({}) }
@@ -828,7 +863,12 @@ describe('the power control', () => {
     }
   })
 
-  it('uses the native confirm when the host offers no modal primitive', async () => {
+  it('asks with its own dialog when the host offers no modal primitive', async () => {
+    // The report that produced this: the desktop app has no `Modal` in its
+    // primitives table at the moment this bundle asks for one, and the card fell
+    // back to `window.confirm` -- a native box with two buttons, in no styling,
+    // and structurally unable to offer "restart". The confirmation is now drawn
+    // by the bundle itself in that case, with the same three choices.
     const bundle = await loadBundle()
     const requests = []
     try {
@@ -838,9 +878,69 @@ describe('the power control', () => {
       }, { Modal: undefined })
       byAction(mounted.tree).props.onClick()
       await settle()
-      assert.equal(requests.length, 1, 'the native confirm path sends immediately')
-      assert.equal(openDialogs(mounted.tree, mounted.primitives).length, 0)
-      assert.equal(phaseOf(mounted.tree), 'waiting')
+      // Nothing is sent until a choice is made: the old fallback fired the
+      // request the instant the native box returned.
+      assert.equal(requests.length, 0, 'the dialog waits for a choice')
+
+      // The dialog the bundle draws is local to the bundle, so expand it; the
+      // host's Button/Modal stubs stay as they are, or the assertions would be
+      // looking at nodes that were never rendered.
+      const isPrimitive = (type) => type === mounted.primitives.Button || type === mounted.primitives.Modal
+      const tree = () => expand(mounted.tree, isPrimitive)
+      const dialogs = collect(tree(), (node) => node.props?.['data-dsh-power-dialog'] === 'fallback')
+      assert.equal(dialogs.length, 1, 'the bundle draws the dialog itself')
+      // The backdrop carries the marker; the panel inside it is the accessible
+      // dialog. Look the panel up rather than assuming the two are one node.
+      const panel = collect(dialogs[0], (node) => node.props?.role === 'dialog')[0]
+      assert.notEqual(panel, undefined, 'the panel is a real dialog role, not a bare div')
+      assert.equal(panel.props['aria-modal'], 'true')
+      assert.notEqual(byConfirm(tree()), undefined, 'confirm is offered')
+      assert.notEqual(collect(tree(), (node) => node.props?.['data-dsh-power-restart'] === 'true')[0], undefined, 'restart is offered')
+      assert.notEqual(collect(tree(), (node) => node.props?.['data-dsh-power-cancel'] === 'true')[0], undefined, 'cancel is offered')
+
+      byConfirm(tree()).props.onClick()
+      await settle()
+      assert.equal(requests.length, 1, 'confirming sends the request')
+    } finally { bundle.restore() }
+  })
+
+  it('offers the same three choices in the fallback dialog that the modal has', async () => {
+    // Parity, stated as a test: a host without the modal primitive must not get a
+    // reduced menu. Cancel leaves the process alone; restart posts to the restart
+    // route rather than the shutdown one.
+    const bundle = await loadBundle()
+    const requests = []
+    try {
+      const mounted = bundle.mount('page', async (...args) => {
+        requests.push(args)
+        return { ok: true, status: 200, json: async () => ({ ok: true, pid: 7 }) }
+      }, { Modal: undefined })
+      byAction(mounted.tree).props.onClick()
+      await settle()
+
+      const isPrimitive = (type) => type === mounted.primitives.Button || type === mounted.primitives.Modal
+      const tree = () => expand(mounted.tree, isPrimitive)
+
+      const cancel = collect(tree(), (node) => node.props?.['data-dsh-power-cancel'] === 'true')[0]
+      cancel.props.onClick()
+      await settle()
+      assert.equal(requests.length, 0, 'cancel sends nothing')
+      assert.equal(collect(tree(), (node) => node.props?.['data-dsh-power-dialog'] === 'fallback').length, 0, 'and closes the dialog')
+
+      // The button must still be there after the dialog closes, and clicking it
+      // must reopen the SAME dialog with all three answers.
+      const reopen = byAction(tree())
+      assert.notEqual(reopen, undefined, 'the power button survives closing the dialog')
+      assert.equal(reopen.props.disabled, false, 'and is usable again, since nothing was sent')
+      reopen.props.onClick()
+      await settle()
+      assert.equal(collect(tree(), (node) => node.props?.['data-dsh-power-dialog'] === 'fallback').length, 1, 'the dialog comes back')
+      const restart = collect(tree(), (node) => node.props?.['data-dsh-power-restart'] === 'true')[0]
+      assert.notEqual(restart, undefined, 'restart is offered again')
+      restart.props.onClick()
+      await settle()
+      assert.equal(requests.length, 1, 'restart sends exactly one request')
+      assert.match(String(requests[0][0]), /\/restart$/u, 'and it is the restart route')
     } finally { bundle.restore() }
   })
 
@@ -1050,9 +1150,11 @@ describe('the power control', () => {
     try {
       let reachable = true
       const mounted = bundle.mount('page', async (url) => {
-        if (String(url).startsWith('/api/')) {
+        if (String(url).includes('/shutdown')) {
           return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9, delayMs: 10_000 }) }
         }
+        // Everything else is the liveness probe: it asks the host's own config
+        // route, so "no longer reachable" is what a stopped host looks like.
         if (!reachable) throw new TypeError('Failed to fetch')
         return { ok: true, status: 200, json: async () => ({ ok: true }) }
       }, { revival: true, opener: {} })
@@ -1092,7 +1194,7 @@ describe('the power control', () => {
       const start = realDateNow()
       Date.now = () => start + 16_000
       const mounted = bundle.mount('page', async (url) => {
-        if (String(url).startsWith('/api/')) {
+        if (String(url).includes('/shutdown')) {
           return { ok: true, status: 200, json: async () => ({ ok: true, shuttingDown: true, pid: 9, delayMs: 30_000 }) }
         }
         return { ok: true, status: 200, json: async () => ({ ok: true }) }

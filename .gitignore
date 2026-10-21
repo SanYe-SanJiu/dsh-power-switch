@@ -14,3 +14,9 @@ shortcut-result.txt
 *.swp
 Thumbs.db
 desktop.ini
+
+# Throwaway scratch scripts. The leading underscore is the convention for "not
+# part of the package": a one-off probe written to answer a question, then
+# abandoned. Nothing ships from these, and a stray one must never reach a commit.
+_*.mjs
+_*.cjs

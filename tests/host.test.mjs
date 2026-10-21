@@ -27,6 +27,7 @@ import {
   createShortcutHandler,
   isTrustedReadRequest,
   isTrustedRequest,
+  isDesktopHost,
   normalizeLaunchMode,
   parseHelperUrl,
   parseShortcutResult,
@@ -34,6 +35,7 @@ import {
   readShutdownRequest,
   relaunchPlan,
   renderShortcutMessages,
+  requestDesktopShutdown,
   restartHelperEnv,
   schemasteryReferrers,
   shortcutVerdict,
@@ -1319,5 +1321,82 @@ describe('the app window hand-over page', () => {
       return response
     })()
     assert.equal(untrusted.state.status, 403)
+  })
+})
+
+describe('the desktop host', () => {
+  /**
+   * A process double with an optional IPC channel.
+   *
+   * `send` existing is not enough -- a child whose parent went away keeps the
+   * method and drops the message -- so `connected` is modelled separately and
+   * each test sets the combination it means to pin down.
+   * @param over - what to override on the base CLI-shaped process.
+   * @returns the process double plus the list of messages it received.
+   */
+  const makeProc = (over = {}) => {
+    const sent = []
+    const proc = {
+      send: (message) => { sent.push(message) },
+      connected: true,
+      pid: 4242,
+      ...over,
+    }
+    return { proc, sent }
+  }
+
+  it('does not mistake a CLI web server for the desktop host', () => {
+    // A `dsh web` process is started by the CLI with no IPC channel at all, so
+    // `send` is absent. Getting this wrong would send a message nobody reads and
+    // report a shutdown that never happened.
+    assert.equal(isDesktopHost({ pid: 1 }), false)
+    assert.equal(isDesktopHost({ pid: 1, send: 'not a function' }), false)
+  })
+
+  it('recognises the desktop host by its live IPC channel', () => {
+    // `process.send` exists only for a forked child; the desktop app forks this
+    // host and talks to it over exactly this channel.
+    const { proc } = makeProc()
+    assert.equal(isDesktopHost(proc), true)
+  })
+
+  it('refuses a channel whose parent has already gone', () => {
+    // `connected` false means the message would be dropped on the floor. Treating
+    // that as success is how a page ends up saying "closing" forever.
+    const { proc } = makeProc({ connected: false })
+    assert.equal(isDesktopHost(proc), false)
+  })
+
+  it('asks the parent to stop with the message the desktop host listens for', () => {
+    // The shape is the desktop host's contract: it switches on `message.type`
+    // and `'shutdown'` is the stop case.
+    const { proc, sent } = makeProc()
+    assert.equal(requestDesktopShutdown(proc), true)
+    assert.deepEqual(sent, [{ type: 'shutdown' }])
+  })
+
+  it('reports a channel that threw rather than claiming the request landed', () => {
+    // A closed pipe throws on write. The caller must be able to tell, because its
+    // next move is the in-process exit, not another wait.
+    const { proc } = makeProc({
+      send() { throw new Error('channel closed') },
+    })
+    assert.equal(isDesktopHost(proc), true, 'the channel is still there')
+    assert.equal(requestDesktopShutdown(proc), false, 'but the write did not land')
+  })
+
+  it('sends nothing at all when there is no desktop parent', () => {
+    // The CLI case: nothing may be sent, and the caller is told so.
+    const { proc, sent } = makeProc({ send: undefined })
+    assert.equal(requestDesktopShutdown(proc), false)
+    assert.deepEqual(sent, [])
+  })
+
+  it('tolerates a process that is not an object at all', () => {
+    // Injected defaults must not throw on a hostile or absent value.
+    for (const value of [null, undefined, 0, 'x']) {
+      assert.equal(isDesktopHost(value), false)
+      assert.equal(requestDesktopShutdown(value), false)
+    }
   })
 })

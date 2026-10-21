@@ -34,17 +34,17 @@ You should cd to the deepseek harness folder first
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
 
 # ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
 #    run this from the checkout root
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
 
 # ③ running from a source checkout that is not built, or you prefer the TypeScript
 #    sources — this is the form the upstream development documentation
 #    (docs/user/develop/basic/publish.md) gives for a source checkout
 #    run this from the checkout root
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
 ```
 
 All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
@@ -205,26 +205,43 @@ The launcher never starts a duplicate instance: when a host is already serving i
 
 ## The desktop app
 
-DSH's desktop build (`DeepSeek Harness.exe`, packaged with Electron) runs under `--profile desktop`, which is a separate install from this plugin's `web` profile. The plugin **can** be installed into the desktop profile, but the two fit together unevenly:
+DSH's desktop build (`DeepSeek Harness.exe`, packaged with Electron) runs under `--profile desktop`, which is a separate install from this plugin's `web` profile. The plugin **can** be installed into the desktop profile, and since 1.1.6 shutdown there actually works — but over a different channel than on the command line.
+
+**Why the channel has to differ.** The desktop host is a child the Electron main process `fork`s. Its `ctx.appExit` is DSH's own `shutdown(code)`, and in `@deepseek-ai/dsh` 0.2.x that is:
+
+```js
+shutdown(code){ return start(code, false) }   // forceAfterDispose = false
+// → completeOnce(code), i.e. process.exitCode = code
+```
+
+It sets an exit code and **never calls `process.exit`**; only a disposal that overruns 5 s is forced. A CLI host still goes away because the CLI's own main finishes. An Electron main process keeps its event loop alive, so setting a code closes nothing. The observable result: the route answers ok, the page says "closing", and DSH is still running.
+
+The desktop app's own stop channel is IPC. The Electron main process sends `{ type: 'shutdown' }`; `dsh-desktop-host` answers by running `await shutdown.shutdown(0)`, reporting `{ type: 'shutdown-complete' }` and then `process.disconnect()`. Since 1.1.6 the plugin asks that way first: `isDesktopHost()` decides on "has `process.send` and `connected === true`", and `requestDesktopShutdown()` sends exactly that message. Only when the channel is unusable does it fall back to `appExit` and then `SIGTERM`.
+
+The check is the IPC channel rather than the executable name on purpose: a source checkout, a packaged install and a custom installer all produce different executable names, while the channel is the fact that matters — a CLI host does not have one.
 
 | Feature | Under the desktop app |
 |---|---|
-| Shutdown | Works, but **degrades to a forced exit**: the desktop app provides no `ctx.appExit`, so the plugin records "no graceful exit available; ending the process now" and ends the process directly. Session persistence is DSH's own timing, not something this plugin holds up |
+| Shutdown | **Works**, through the Electron main process's IPC stop channel (above). Falls back to `appExit` / `SIGTERM` only when that cannot be used |
 | Restart | Works. It does not depend on `appExit`; it goes through the plugin's own supervisor |
 | Launch-mode switch | **Refused**, explicitly. The desktop app *is* an app window, so there is no tab form to switch to; the plugin answers `refused` with its reason and changes nothing |
 | `delayMs` / `exitCode` | Nobody reads them. The desktop app's exit is managed by its Electron main process; these two values only mean something for a DSH started from a terminal, a script or a service manager |
-| `hard` | Works, and is the only fallback that means anything in the desktop app — it is the forced-exit path |
+| `hard` | Works. It is the forced-exit path |
+| "Still running" after a shutdown | The probe asks the plugin's own `/config` route. The desktop page is served from `dsh-app://app/` by the Electron main process's protocol handler — which **keeps answering after the host is gone** — so the page URL can never stand in for liveness |
+| Confirmation dialog | When the host offers no `Modal`, the bundle draws its own, still offering cancel / restart / confirm. It no longer falls back to a two-button `window.confirm` |
 | Desktop shortcut layer | **The desktop icon is never touched.** `classifyShortcut` judges a shortcut whose target is `DeepSeek Harness.exe` (or whose path mentions `desktop-host` or `electron`) as `other` and leaves it out — neither rewritten nor restored |
 
 Installing into the desktop profile:
 
 ```powershell
-dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
 ```
 
 Restart the desktop app afterwards. To check the install landed, look for `dsh-power-switch` in `dsh.profile.bundles` of `%USERPROFILE%\.dsh\profiles\desktop\package.json`.
 
-In one sentence: **if you only use the desktop app, what is left of this plugin is "restart" and "forced exit"** — the desktop window already has its own close button, so it never needed a shutdown button. The full feature set (graceful exit, launch-mode switching, the pre-exit wait and the exit code) is for a DSH started from a terminal or a script.
+**Upgrading**: without the `#vX.Y.Z` suffix pnpm caches by branch ref, so repeating `add` can leave you on the old build. Pin the tag, or run `dsh plugin --profile desktop remove dsh-power-switch` and install again.
+
+In one sentence: the desktop window already has its own close button, so what this plugin is for there is **getting the shutdown right** (actually ending the process, and offering cancel / restart / confirm properly) plus a working restart. For a DSH started from a terminal or a script it also adds the pre-exit wait and the exit code.
 
 ## State and logs
 
@@ -259,7 +276,6 @@ The card's configuration page, or the loader row's `config:`:
 | `hard` | `false` | Skip the graceful path and end the process at once |
 
 All four are for a DSH **started from a local build**: the `dsh web` command line, a source checkout, or something a script or service manager pulls up. The desktop app (Electron) manages its own exit, its launch-mode switch is refused outright (see "The desktop app" above), and nothing reads `delayMs` or `exitCode` there; only `hard` still means something, being the forced-exit path.
-
 `launchMode` is switched from the card. The other three are edited from the card's own **Advanced settings** block, which writes them to `settings.json` in the state directory. That block exists because it is the only UI for those three on a DSH that generates settings forms (0.1.7) — a plugin without a declared schema gets no generated form, so without it they would be editable only by hand-editing the profile patch. On a host that still has the registered-namespace settings API, the same save is written to the settings document as well, so the two surfaces cannot disagree; the recorded value is the one that governs, and deleting `settings.json` hands the decision back to the loader row's `config:` and the settings document.
 
 The card opens on the two power controls alone. The launch-mode switch and the three advanced values share one **Advanced settings** fold that starts closed.

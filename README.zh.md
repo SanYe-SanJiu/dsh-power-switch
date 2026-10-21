@@ -34,16 +34,16 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ```powershell
 # ① 已安装 dsh 命令（npm 全局安装或桌面版）
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
 
 # ② 从源码检出运行，且检出已构建（存在 apps/cli/lib/bin.js）
 #    需在检出根目录执行
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
 
 # ③ 从源码检出运行，未构建或希望直接跑 TypeScript 源码
 #    需在检出根目录执行；官方开发文档（docs/user/develop/basic/publish.md）
 #    对源码检出的写法就是这条
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
 ```
 
 三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。
@@ -201,26 +201,43 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 
 ## 桌面版
 
-DSH 的桌面版（`DeepSeek Harness.exe`，Electron 打包）用 `--profile desktop`，与本插件的 `web` profile 是两套独立安装。本插件**可以**装进桌面版 profile，但两者的契合度不同：
+DSH 的桌面版（`DeepSeek Harness.exe`，Electron 打包）用 `--profile desktop`，与本插件的 `web` profile 是两套独立安装。本插件**可以**装进桌面版 profile，且 1.1.6 起关闭进程在桌面版下是真正可用的——但走的是与命令行不同的通道。
+
+**为什么通道必须不同。** 桌面版的宿主进程是 Electron 主进程 `fork` 出来的子进程。它的 `ctx.appExit` 就是 DSH 的 `shutdown(code)`，而实测 `@deepseek-ai/dsh` 0.2.x 的实现是：
+
+```js
+shutdown(code){ return start(code, false) }   // forceAfterDispose = false
+// → completeOnce(code)，即 process.exitCode = code
+```
+
+它只设置退出码、**不调用 `process.exit`**；只有 dispose 卡住超过 5 秒才会强制结束。命令行宿主能正常退出，是因为 CLI 主进程处理完就结束了；而 Electron 主进程的事件循环由 app 持有，设个退出码不会让它退出。结果是：路由回了成功、页面显示「正在关闭」、DSH 却还在跑。
+
+桌面版自己的停止通道是 IPC。Electron 主进程发 `{ type: 'shutdown' }`，`dsh-desktop-host` 收到后执行 `await shutdown.shutdown(0)`、回报 `{ type: 'shutdown-complete' }`、再 `process.disconnect()`。插件 1.1.6 起先走这条通道：`isDesktopHost()` 以「存在 `process.send` 且 `connected === true`」判定，`requestDesktopShutdown()` 发出上面那条消息；通道不可用时才退回 `appExit` → `SIGTERM` 的原有路径。
+
+之所以用 IPC 通道而不是可执行文件名来判定：源码检出、打包安装、自定义安装的可执行文件名各不相同，而 IPC 通道是「这个进程是被 fork 出来的」这一事实本身，命令行宿主没有它。
 
 | 功能 | 桌面版情形 |
 |---|---|
-| 关闭进程 | 可用，但**退化为强制退出**：桌面版不提供 `ctx.appExit`，插件会记下「no graceful exit available; ending the process now」后直接结束进程。会话落盘由 DSH 自身的持久化节奏保证，不是本插件拦出来的 |
+| 关闭进程 | **可用**，走 Electron 主进程的 IPC 停止通道（见上）。判定失败时才退回 `appExit` / `SIGTERM` |
 | 重启 | 可用。它不依赖 `appExit`，走的是插件自己的督导进程 |
 | 启动方式切换 | **明确拒绝**。桌面版本就是应用窗口，没有标签页形态可切；插件会返回 `refused` 并说明原因，不做任何改动 |
 | `delayMs` / `exitCode` | 无人读取。桌面版的退出由它的 Electron 主进程管理，这两个值只对从终端、脚本或服务管理器拉起的 DSH 有意义 |
-| `hard` | 可用，是桌面版里唯一有意义的兜底——它就是强制结束那条路径 |
+| `hard` | 可用，是强制结束那条路径 |
+| 关闭后的「还在运行」判定 | 探针请求插件自己的 `/config` 路由。桌面版页面来自 `dsh-app://app/`，由 Electron 主进程的协议处理器提供——**即使宿主进程已退出它仍会应答**，所以不能拿页面地址当存活依据 |
+| 确认框 | 宿主不提供 `Modal` 时由插件自绘对话框，同样给出取消 / 重启 / 确认关闭三项，不再退回只有两个按钮的 `window.confirm` |
 | 桌面快捷方式层 | **不会碰桌面版的图标**。`classifyShortcut` 把目标指向 `DeepSeek Harness.exe`（或路径含 `desktop-host`、`electron`）的快捷方式判为 `other` 并排除，既不改写也不还原 |
 
 安装到桌面版 profile：
 
 ```powershell
-dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
 ```
 
 装完需要重启桌面版。判断装没装对，看 `%USERPROFILE%\.dsh\profiles\desktop\package.json` 的 `dsh.profile.bundles` 里是否出现 `dsh-power-switch`。
 
-一句话：**如果你只用桌面版，这个插件的价值只剩下「重启」和「强制结束」**——桌面版的窗口自带 `X`，本来就不需要关闭按钮。完整功能（优雅退出、启动方式切换、退出前等待与退出码）面向的是从终端或脚本拉起 DSH 的情形。
+**升级注意**：若不写 `#vX.Y.Z`，pnpm 会按分支 ref 缓存，重复 `add` 可能仍拿到旧版本。升级时请显式写上 tag，或先 `dsh plugin --profile desktop remove dsh-power-switch` 再安装。
+
+一句话：桌面版的窗口自带 `X`，本插件在那里的意义是**把关闭做对**（真正结束进程、给出正确的关闭/重启/取消三选一），以及提供一个可用的「重启」。从终端或脚本拉起 DSH 时，它还额外提供退出前等待与退出码。
 
 ## 状态与日志
 
@@ -255,7 +272,7 @@ dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
 
 卡片默认只展开两个电源控件（关闭、重启）。启动方式开关与以上三项都在卡片底部一个**默认收起**的「高级设置」折叠区里。
 
-**这四项面向从本地构建启动 DSH 的情形**：`dsh web` 命令行、源码检出，或由脚本 / 服务管理器拉起。桌面版（Electron）由它自己的主进程管理退出，启动方式切换会明确拒绝（见下文），`delayMs` 与 `exitCode` 也无人读取；只有 `hard` 在桌面版里仍是可用的兜底——它是强制结束那条路径。
+**这四项面向从本地构建启动 DSH 的情形**：`dsh web` 命令行、源码检出，或由脚本 / 服务管理器拉起。桌面版（Electron）由它自己的主进程管理退出，启动方式切换会明确拒绝（见下文），`delayMs` 与 `exitCode` 也无人读取；只有 `hard` 在那里仍有意义——它是强制结束那条路径。
 
 `launchMode` 由卡片切换；其余三项在**高级设置**块里修改，写入状态目录的 `settings.json`。该块存在的原因：在生成式设置表单的 DSH（0.1.7）上，未声明 schema 的插件拿不到任何表单，没有它这三项就只能手改 profile patch。若宿主仍提供"注册命名空间"那套设置 API，同一次保存也会写入设置文档，使两个界面不会各说各话；最终以记录值为准，删除 `settings.json` 即把决定权交回 loader row 的 `config:` 与设置文档。
 
