@@ -34,16 +34,16 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ```powershell
 # ① 已安装 dsh 命令（npm 全局安装或桌面版）
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
 
 # ② 从源码检出运行，且检出已构建（存在 apps/cli/lib/bin.js）
 #    需在检出根目录执行
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
 
 # ③ 从源码检出运行，未构建或希望直接跑 TypeScript 源码
 #    需在检出根目录执行；官方开发文档（docs/user/develop/basic/publish.md）
 #    对源码检出的写法就是这条
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
 ```
 
 三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。
@@ -230,7 +230,7 @@ shutdown(code){ return start(code, false) }   // forceAfterDispose = false
 安装到桌面版 profile：
 
 ```powershell
-dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
 ```
 
 装完需要重启桌面版。判断装没装对，看 `%USERPROFILE%\.dsh\profiles\desktop\package.json` 的 `dsh.profile.bundles` 里是否出现 `dsh-power-switch`。

@@ -402,15 +402,29 @@ window.__ModuleLoader__.load({
    earlier version asked for width:100% and squeezed the neighbour's peak/off-peak
    bar down to nothing; 36px is the largest size that still leaves that budget box
    (min-width 148px) its room in an expanded sidebar. (No backticks in this block:
-   it is a template literal.) */
+   it is a template literal.)
+
+   NO position PROPERTY HERE, and that is load-bearing. The status popover used
+   to be anchored by declaring position: relative on this element, which also
+   made it the containing block for EVERY fixed-position descendant -- including
+   the fallback confirmation dialog. The dialog then resolved inset: 0 against a
+   36px button instead of the viewport: it looked approximately centred and no
+   click ever reached it. The popover gets its own anchoring wrapper below, so
+   this element stays free of positioning and a fixed dialog can escape. */
 .dpb-side {
-  /* Anchors the status popover, which takes no layout space of its own. */
-  position: relative;
   display: flex;
   align-items: center;
   flex: none;
   width: auto;
   min-width: 0;
+}
+/* Anchors the status popover only, so the popover can keep taking no layout
+   space without turning the whole seat into a containing block. */
+.dpb-side-anchor {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
 }
 .dpb-side-button {
   display: inline-flex;
@@ -590,10 +604,15 @@ window.__ModuleLoader__.load({
      * no matter which dialog drew it. `data-dsh-power-dialog="fallback"` is the
      * marker that says which one this is.
      *
-     * Rendered as a fixed-position backdrop rather than through a portal: the
-     * card and the sidebar button live in slots the plugin does not own, and a
-     * portal would need a host-provided root. `position: fixed` is enough and
-     * keeps the component dependency-free.
+     * Drawn in place, as a plain fixed-position subtree. That works ONLY because
+     * the caller keeps it outside `.dpb-side`, which is the element that used to
+     * carry `position: relative`: a positioned ancestor silently becomes the
+     * containing block for every fixed descendant, so the backdrop resolved
+     * `inset: 0` against a 36px sidebar button instead of the viewport. It looked
+     * roughly centred and swallowed no clicks. There is no portal and no second
+     * React root here, because neither is needed once the ancestor chain is
+     * clean -- and `react-dom/client` is not a platform seed word, so a portal
+     * would have to be hand-rolled anyway.
      * @param props - the three answers plus their copy and the hook names.
      * @returns the dialog, or null when it is closed.
      */
@@ -621,7 +640,7 @@ window.__ModuleLoader__.load({
         onClick: () => { handler() },
       }, label)
 
-      return h('div', {
+      const dialog = h('div', {
         className: 'dpb-dialog-backdrop',
         'data-dsh-power-dialog': 'fallback',
       },
@@ -640,6 +659,7 @@ window.__ModuleLoader__.load({
           ),
         ),
       )
+      return dialog
     }
 
     /**
@@ -1667,28 +1687,37 @@ window.__ModuleLoader__.load({
       }
 
       /* eslint-disable react/no-unknown-property -- data-* attributes are the page's hooks */
-      return h('div', {
-        className: 'dpb-side',
-        'data-dsh-power-side': 'shutdown',
-      },
-        status === null ? null : h('div', {
-          className: 'dpb-side-status',
-          'data-dsh-power-side-status': failed ? 'failed' : 'ok',
-        }, status),
-        h('button', {
-          type: 'button',
-          className: 'dpb-side-button',
-          disabled: busy || status === t('cornerClosing'),
-          // The label lives in the tooltip: the button itself stays a fixed 32px so it
-          // can never take width from the budget box beside it.
-          title: status ?? t('cornerAction'),
-          'aria-label': t('cornerAction'),
-          'data-state': failed ? 'failed' : 'idle',
-          'data-dsh-power-shutdown': 'sidebar',
-          onClick: () => {
-            setConfirming(true)
-          },
-        }, busy ? '…' : '⏻'),
+      // Two siblings, on purpose. The anchored wrapper holds only the things
+      // that need the seat's box for positioning (the popover and the button);
+      // the confirmation dialog sits OUTSIDE it, so its `position: fixed`
+      // resolves against the viewport and its clicks land. See the `.dpb-side`
+      // rule: a positioned wrapper here is exactly what broke it before.
+      return h(React.Fragment, null,
+        h('div', {
+          className: 'dpb-side',
+          'data-dsh-power-side': 'shutdown',
+        },
+          h('div', { className: 'dpb-side-anchor' },
+            status === null ? null : h('div', {
+              className: 'dpb-side-status',
+              'data-dsh-power-side-status': failed ? 'failed' : 'ok',
+            }, status),
+            h('button', {
+              type: 'button',
+              className: 'dpb-side-button',
+              disabled: busy || status === t('cornerClosing'),
+              // The label lives in the tooltip: the button itself stays a fixed 36px
+              // so it can never take width from the budget box beside it.
+              title: status ?? t('cornerAction'),
+              'aria-label': t('cornerAction'),
+              'data-state': failed ? 'failed' : 'idle',
+              'data-dsh-power-shutdown': 'sidebar',
+              onClick: () => {
+                setConfirming(true)
+              },
+            }, busy ? '…' : '⏻'),
+          ),
+        ),
         hasModal() ? h(primitives.Modal, {
           open: confirming,
           onClose: () => { setConfirming(false) },

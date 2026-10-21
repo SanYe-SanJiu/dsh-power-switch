@@ -34,17 +34,17 @@ You should cd to the deepseek harness folder first
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
 
 # ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
 #    run this from the checkout root
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
 
 # ③ running from a source checkout that is not built, or you prefer the TypeScript
 #    sources — this is the form the upstream development documentation
 #    (docs/user/develop/basic/publish.md) gives for a source checkout
 #    run this from the checkout root
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
 ```
 
 All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
@@ -234,7 +234,7 @@ The check is the IPC channel rather than the executable name on purpose: a sourc
 Installing into the desktop profile:
 
 ```powershell
-dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.6
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
 ```
 
 Restart the desktop app afterwards. To check the install landed, look for `dsh-power-switch` in `dsh.profile.bundles` of `%USERPROFILE%\.dsh\profiles\desktop\package.json`.
