@@ -34,17 +34,17 @@ You should cd to the deepseek harness folder first
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
 
 # ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
 #    run this from the checkout root
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
 
 # ③ running from a source checkout that is not built, or you prefer the TypeScript
 #    sources — this is the form the upstream development documentation
 #    (docs/user/develop/basic/publish.md) gives for a source checkout
 #    run this from the checkout root
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
 ```
 
 All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
@@ -205,7 +205,7 @@ The launcher never starts a duplicate instance: when a host is already serving i
 
 ## The desktop app
 
-DSH's desktop build (`DeepSeek Harness.exe`, packaged with Electron) runs under `--profile desktop`, which is a separate install from this plugin's `web` profile. The plugin **can** be installed into the desktop profile, and since 1.1.6 shutdown there actually works — but over a different channel than on the command line.
+DSH's desktop build (`DeepSeek Harness.exe`, packaged with Electron) runs under `--profile desktop`, which is a separate install from this plugin's `web` profile. The plugin **can** be installed into the desktop profile, and since 1.1.8 shutdown there actually works — but over a different channel than on the command line.
 
 **Why the channel has to differ.** The desktop host is a child the Electron main process `fork`s. Its `ctx.appExit` is DSH's own `shutdown(code)`, and in `@deepseek-ai/dsh` 0.2.x that is:
 
@@ -220,13 +220,33 @@ The desktop app's own stop channel is IPC. The Electron main process sends `{ ty
 
 The check is the IPC channel rather than the executable name on purpose: a source checkout, a packaged install and a custom installer all produce different executable names, while the channel is the fact that matters — a CLI host does not have one.
 
+**The IPC channel is not enough, and that is what 1.1.8 fixes.** `{ type: 'shutdown' }` still lands on that same `shutdown()` — set the code, clear its own watchdog, stay alive. Measured on the packaged 0.2.0-rc.2: the route answered ok, the page said "closing", DSH kept running. So the desktop case needs a terminator outside the DSH tree. What the plugin does now:
+
+1. Send the IPC `{ type: 'shutdown' }` first, so a host that *can* stop cleanly still does;
+2. Start PowerShell and **probe read-only**: is `process.ppid` running, and does its name match this host's own executable (`DeepSeek Harness.exe` → `DeepSeek Harness`)? A mismatched name is not killed;
+3. Then `Process.Kill()` the **main** process. The host is a `fork` child of it, so ending the main process closes the window, the host and every renderer in one step with no orphan behind (measured: main plus three children killed, zero survivors). Killing the host instead makes the main process report a crash — a `dsh desktop host stopped` modal — which is exactly the dialog this route exists to avoid.
+
+What was measured on one machine, repeatedly:
+
+| Approach | Result |
+|---|---|
+| Python `TerminateProcess` on the main pid | ✅ works, no leftovers |
+| PowerShell `Process.Kill()` on the main pid | ✅ works, no leftovers |
+| `taskkill /PID <main> /F` | ❌ `ERROR: Access denied` |
+| Killing every child instead | ⚠️ the whole app does exit, but the main process shows a crash dialog first |
+| Asking the main process over IPC | ❌ there is no quit channel (none of its 19 channels offers quit or restart) |
+
+`taskkill` being refused is not a sandbox artefact: the packaged app installs a `dshMandatoryUpdatePolicy` restricting what helper processes may do to it, and a real `TerminateProcess` handle is not covered by it — which is the path PowerShell's `Process.Kill()` takes.
+
+**And one step has to stay asynchronous.** If `gracefulExit` resolves at once, the watchdog reads that as "the handover finished" and stands down (`graceful exit settled; the watchdog stands down`), leaving the process in place — which is precisely how this route used to report success and close nothing. So the desktop branch's promise does not resolve until the process is really gone, and the watchdog's forced exit stays armed. The "could not kill it" case follows the same rule: it stays pending and lets the watchdog escalate.
+
 | Feature | Under the desktop app |
 |---|---|
-| Shutdown | **Works**, through the Electron main process's IPC stop channel (above). Falls back to `appExit` / `SIGTERM` only when that cannot be used |
-| Restart | Works. It does not depend on `appExit`; it goes through the plugin's own supervisor |
+| Shutdown | **Works**: IPC stop → read-only probe → terminate the main process (above). If any step fails, the watchdog forces the exit after 5 s |
+| Restart | **Not available, by design.** A restart replays the launch command line, and the desktop app was not started as `dsh web`; `relaunchPlan` answers `unsupported-host`, and the card says so instead of pretending |
 | Launch-mode switch | **Refused**, explicitly. The desktop app *is* an app window, so there is no tab form to switch to; the plugin answers `refused` with its reason and changes nothing |
 | `delayMs` / `exitCode` | Nobody reads them. The desktop app's exit is managed by its Electron main process; these two values only mean something for a DSH started from a terminal, a script or a service manager |
-| `hard` | Works. It is the forced-exit path |
+| `hard` | The forced path: skip the graceful exit and go straight to the terminator |
 | "Still running" after a shutdown | The probe asks the plugin's own `/config` route. The desktop page is served from `dsh-app://app/` by the Electron main process's protocol handler — which **keeps answering after the host is gone** — so the page URL can never stand in for liveness |
 | Confirmation dialog | When the host offers no `Modal`, the bundle draws its own, still offering cancel / restart / confirm. It no longer falls back to a two-button `window.confirm` |
 | Desktop shortcut layer | **The desktop icon is never touched.** `classifyShortcut` judges a shortcut whose target is `DeepSeek Harness.exe` (or whose path mentions `desktop-host` or `electron`) as `other` and leaves it out — neither rewritten nor restored |
@@ -234,14 +254,14 @@ The check is the IPC channel rather than the executable name on purpose: a sourc
 Installing into the desktop profile:
 
 ```powershell
-dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.7
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
 ```
 
 Restart the desktop app afterwards. To check the install landed, look for `dsh-power-switch` in `dsh.profile.bundles` of `%USERPROFILE%\.dsh\profiles\desktop\package.json`.
 
 **Upgrading**: without the `#vX.Y.Z` suffix pnpm caches by branch ref, so repeating `add` can leave you on the old build. Pin the tag, or run `dsh plugin --profile desktop remove dsh-power-switch` and install again.
 
-In one sentence: the desktop window already has its own close button, so what this plugin is for there is **getting the shutdown right** (actually ending the process, and offering cancel / restart / confirm properly) plus a working restart. For a DSH started from a terminal or a script it also adds the pre-exit wait and the exit code.
+In one sentence: the desktop window already has its own close button, so what this plugin is for there is **getting the shutdown right** (actually ending the process, and offering cancel / restart / confirm properly). For a DSH started from a terminal or a script it also adds the pre-exit wait and the exit code; under the desktop app, "restart" says plainly that it cannot.
 
 ## State and logs
 

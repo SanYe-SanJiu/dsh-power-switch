@@ -48,6 +48,8 @@ import {
   createShortcutHandler,
   chooseShortcutAction,
   isDesktopHost,
+  desktopTerminateScript,
+  parseDesktopTerminateResult,
   parseShortcutResult,
   relaunchPlan,
   renderShortcutMessages,
@@ -383,16 +385,29 @@ export function apply(ctx, config = {}, timings = {}) {
       // channel. Its `ctx.appExit` only sets `process.exitCode` and returns, and
       // an Electron main process keeps its event loop alive, so asking it that
       // way closes nothing: the route answers "ok", the page says "closing", and
-      // DSH is still running afterwards. Its own stop channel is the parent
-      // asking over IPC -- see `isDesktopHost` for why `process.send` is the
-      // signal and why `execPath` is not.
+      // DSH is still running afterwards.
       //
-      // Tried FIRST, because on the desktop host it is the only channel that
-      // works. A `false` answer means the parent is gone, not that DSH refused,
-      // so falling through to the in-process path is still correct.
-      if (requestDesktopShutdown(process) === true) {
-        note('asked the desktop parent to stop this host')
-        return
+      // The desktop path, in order:
+      //   1. ask the parent over IPC, so a host that CAN stop cleanly does;
+      //   2. end the Electron main process, because on the packaged app step 1
+      //      is not enough -- the host records the exit code, clears its own
+      //      watchdog, and keeps running. See `desktopTerminateScript` for the
+      //      measurements behind that claim.
+      //
+      // Only on the desktop: a CLI host has a working `appExit`, and killing a
+      // process the operator started would be a worse bug than any delay.
+      //
+      // The returned promise is load-bearing. A graceful exit that resolves at
+      // once reads as "settled" to the watchdog, which then stands down and
+      // leaves the process alive -- exactly the bug that made this route report
+      // success and close nothing for two releases. On the desktop the terminator
+      // can only answer "it is gone", so the wait is on the pid disappearing;
+      // it never settles while the pid is still there, and the watchdog's
+      // escalation stays armed.
+      if (isDesktopHost(process) === true) {
+        note('desktop host: asking the parent to stop, then ending the app process')
+        requestDesktopShutdown(process)
+        return terminateDesktopApp({ note })
       }
       const exit = ctx.get('appExit')
       if (typeof exit === 'function') {
@@ -934,6 +949,140 @@ async function resolveAppExit(ctx, token = { cancelled: false }) {
     await new Promise((resolve) => { setTimeout(resolve, 50) })
   }
   return undefined
+}
+
+/**
+ * End the Electron desktop app from inside its own host process.
+ *
+ * The host cannot end it by asking: see `desktopTerminateScript` for the
+ * measurements. What has to happen instead is a terminator outside the DSH tree,
+ * aimed at the MAIN process, because that one ends the window, the host and the
+ * renderers in a single step and leaves no orphan behind.
+ *
+ * Which pid is the main process is the part that has to be established, not
+ * assumed. The host is forked by it, so `process.ppid` names it -- but only for
+ * as long as the parent is alive. A host whose parent has already gone away is
+ * re-parented (to PID 4 on Windows, to init on POSIX), and killing PID 4 would be
+ * a catastrophe rather than a shutdown. So the pid is confirmed against the
+ * executable before anything is killed:
+ *
+ *   - the process must exist;
+ *   - its name must match this app's own executable basename.
+ *
+ * `process.ppid <= 4` is refused without asking PowerShell at all.
+ *
+ * The probe runs first as a separate call on purpose. A single script that
+ * checked and killed in one pass would give the same answer, but with no record
+ * of WHY it went wrong when the name check failed -- and the previous two
+ * attempts at this feature both failed silently for exactly that reason.
+ *
+ * Resolves when the app process is gone, and never resolves while it is not:
+ * see the caller for why the settled/never-settled distinction is the whole point.
+ * @param options - `{ note, pid, execPath, kill }`, all injected for tests.
+ * @returns a promise for what PowerShell reported, or one that never settles
+ *   while the pid is still alive. Null when the probe could not run at all,
+ *   which settles so the watchdog can escalate.
+ */
+export function terminateDesktopApp(options) {
+  const note = options?.note
+  const pid = Number.isFinite(options?.pid) ? Math.trunc(options.pid) : process.ppid
+  const execPath = typeof options?.execPath === 'string' ? options.execPath : process.execPath
+  const runner = typeof options?.run === 'function' ? options.run : runDesktopPowerShell
+
+  // 4 is the Windows "System" process and 2 is its kernel; a host re-parented
+  // after its parent died reports one of those. There is no app there to close.
+  if (!Number.isFinite(pid) || pid <= 4) {
+    note?.(`desktop app: refused to terminate pid ${String(pid)}; that is not the Electron main process`)
+    return Promise.resolve(null)
+  }
+  const expected = executableName(execPath)
+  const probeResult = readTerminateManifest(runner({ pid, whatIf: true }), note, 'probe')
+  if (probeResult === null) return Promise.resolve(null)
+  if (probeResult.found !== true) {
+    note?.(`desktop app: pid ${String(pid)} is not running any more (${String(probeResult.error)}); nothing to close`)
+    return Promise.resolve(probeResult)
+  }
+  if (expected !== '' && probeResult.name !== null && probeResult.name.toLowerCase() !== expected.toLowerCase()) {
+    note?.(`desktop app: refused to terminate pid ${String(pid)}: it is "${String(probeResult.name)}", not "${expected}"`)
+    return Promise.resolve(probeResult)
+  }
+  const result = readTerminateManifest(runner({ pid, whatIf: false }), note, 'terminate')
+  if (result === null) return Promise.resolve(null)
+  if (result.killed === true) note?.(`desktop app: terminated pid ${String(pid)} (${String(result.name)})`)
+  else note?.(`desktop app: pid ${String(pid)} was not terminated (${String(result.error)})`)
+  // Still there after the kill was asked for -- the name matched, so this is a
+  // refusal, not a race. Never settle: the watchdog has to escalate.
+  if (result.killed !== true && result.found === true) {
+    note?.(`desktop app: pid ${String(pid)} survived the kill; leaving the escalation to the watchdog`)
+    return new Promise(() => {})
+  }
+  return Promise.resolve(result)
+}
+
+/**
+ * The basename of an executable, without its `.exe` suffix and lower-cased.
+ *
+ * PowerShell's `ProcessName` drops the extension (`DeepSeek Harness` for
+ * `DeepSeek Harness.exe`), so both sides are normalised the same way before the
+ * comparison in {@link terminateDesktopApp}.
+ * @param execPath - an absolute executable path.
+ * @returns the comparable name, or `''` when there is none.
+ */
+export function executableName(execPath) {
+  if (typeof execPath !== 'string' || execPath === '') return ''
+  const base = execPath.split(/[\\/]/u).pop() ?? ''
+  return base.replace(/\.exe$/iu, '').trim().toLowerCase()
+}
+
+/**
+ * Run one terminating script and turn its output into a manifest.
+ *
+ * PowerShell is started with `-EncodedCommand`, so the script never has to be
+ * escaped into a command line: the pid and the app name travel as data.
+ * @param options - `{ pid, whatIf }`.
+ * @returns `{ status, stdout, stderr, error }`, the shape a test can fake.
+ */
+function runDesktopPowerShell(options) {
+  const script = desktopTerminateScript(options)
+  const encoded = Buffer.from(script, 'utf16le').toString('base64')
+  const candidates = ['powershell.exe', 'pwsh.exe']
+  let lastError = 'PowerShell was not found'
+  for (const command of candidates) {
+    const result = spawnSync(command, [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded,
+    ], { windowsHide: true, encoding: 'utf8', timeout: 15000 })
+    if (result.error !== undefined && result.error !== null) {
+      lastError = `${command}: ${String(result.error.message ?? result.error)}`
+      continue
+    }
+    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: null }
+  }
+  return { status: null, stdout: '', stderr: '', error: lastError }
+}
+
+/**
+ * Read a manifest out of one PowerShell run, logging why it was unusable.
+ * @param run - the runner result.
+ * @param note - diagnostics sink.
+ * @param stage - `'probe'` or `'terminate'`, for the log line.
+ * @returns the parsed manifest, or null when the run produced nothing usable.
+ */
+function readTerminateManifest(run, note, stage) {
+  if (run === null || run === undefined) {
+    note?.(`desktop app: ${stage} produced no result`)
+    return null
+  }
+  if (typeof run.error === 'string' && run.error !== '') {
+    note?.(`desktop app: ${stage} could not start a shell: ${run.error}`)
+    return null
+  }
+  const parsed = parseDesktopTerminateResult(run.stdout)
+  if (parsed === null) {
+    const detail = String(run.stderr ?? '').trim().slice(0, 300)
+    note?.(`desktop app: ${stage} answered nothing usable (status ${String(run.status)}${detail === '' ? '' : `: ${detail}`})`)
+    return null
+  }
+  return parsed
 }
 
 /**

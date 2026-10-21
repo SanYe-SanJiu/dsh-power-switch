@@ -43,6 +43,8 @@ import {
   resolveConfig,
   createSettingsHandler,
   parseSettingsPatch,
+  desktopTerminateScript,
+  parseDesktopTerminateResult,
 } from '../src/host.js'
 
 /** A request double carrying exactly what the handler reads. */
@@ -1398,5 +1400,59 @@ describe('the desktop host', () => {
       assert.equal(isDesktopHost(value), false)
       assert.equal(requestDesktopShutdown(value), false)
     }
+  })
+})
+
+describe('terminating the desktop app', () => {
+  it('writes a real script, not a semicolon-joined one-liner', () => {
+    // The first version joined its statements with ';' and PowerShell rejected
+    // the block after the closing brace, so a running process was reported as
+    // `found: false`. Lines are the difference between working and silently
+    // doing nothing.
+    const script = desktopTerminateScript({ pid: 4321, whatIf: true })
+    const lines = script.split('\n')
+    assert.ok(lines.length > 6, 'a block script has lines')
+    assert.ok(lines.includes('try {'), 'the try needs its own line')
+    assert.ok(lines.includes('} catch {'), 'and so does the catch')
+    assert.ok(script.includes('$targetPid = 4321'), 'the pid travels as data')
+  })
+
+  it('does not kill when asked only to look', () => {
+    // The probe is the safety mechanism: it must be incapable of ending
+    // anything, because it runs before the name check has agreed.
+    assert.ok(!desktopTerminateScript({ pid: 1, whatIf: true }).includes('.Kill()'))
+    assert.ok(desktopTerminateScript({ pid: 1, whatIf: false }).includes('.Kill()'))
+  })
+
+  it('defaults to the safe script when no option says otherwise', () => {
+    // A caller that forgets `whatIf` must not get a kill.
+    assert.ok(!desktopTerminateScript({ pid: 1 }).includes('.Kill()'))
+    assert.ok(!desktopTerminateScript().includes('.Kill()'))
+  })
+
+  it('never interpolates a pid that could break out of the script', () => {
+    // The pid travels inside single quotes; a non-numeric value must not
+    // become code.
+    const script = desktopTerminateScript({ pid: Number.NaN, whatIf: true })
+    assert.ok(script.includes('$targetPid = 0'))
+  })
+
+  it('reads the manifest out of the last line that parses', () => {
+    // PowerShell may print warnings or a BOM before the object.
+    const parsed = parseDesktopTerminateResult('WARNING: something\r\n{"pid":7,"found":true,"killed":true,"name":"DeepSeek Harness","error":null}\r\n')
+    assert.deepEqual(parsed, { found: true, killed: true, name: 'DeepSeek Harness', error: null })
+  })
+
+  it('reports nothing usable rather than inventing a kill', () => {
+    for (const output of ['', '   ', 'not json', '[]', 'null', '42', undefined, null]) {
+      assert.equal(parseDesktopTerminateResult(output), null)
+    }
+  })
+
+  it('does not claim a kill the shell never reported', () => {
+    // `killed` is opt-in: only a literal true counts, so a malformed or
+    // partial object cannot be read as success.
+    const parsed = parseDesktopTerminateResult('{"found":true,"killed":"yes","name":5}')
+    assert.deepEqual(parsed, { found: true, killed: false, name: null, error: null })
   })
 })

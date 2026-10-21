@@ -19,6 +19,7 @@ import { after, before, describe, it } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { CONFIG_ROUTE, POWER_ROUTE } from '../src/host.js'
 import { apply, inject, name } from '../src/index.js'
+import { executableName, terminateDesktopApp } from '../src/index.js'
 import { readRecordedLaunchMode, stateDir, writeRecordedLaunchMode } from '../scripts/restart-shared.mjs'
 
 /**
@@ -396,5 +397,108 @@ describe('host plugin wiring', () => {
     assert.match(response.json().error, /not started as a dsh web server/)
     await new Promise((resolve) => { setTimeout(resolve, 40) })
     assert.deepEqual(codes, [], 'a refused restart must never reach appExit')
+  })
+})
+
+describe('terminating the desktop app from the host', () => {
+  const ok = (found, killed, name, error = null) => ({
+    status: 0,
+    stdout: JSON.stringify({ pid: 4321, found, killed, name, error }),
+    stderr: '',
+    error: null,
+  })
+
+  /** A runner that replays canned answers and records what it was asked. */
+  function makeRunner(answers) {
+    const asked = []
+    let index = 0
+    const run = (options) => {
+      asked.push(options.whatIf)
+      const answer = answers[index]
+      index += 1
+      return answer ?? { status: 0, stdout: '', stderr: '', error: null }
+    }
+    return { run, asked }
+  }
+
+  /** Settle or prove the promise is deliberately still pending. */
+  async function outcome(promise) {
+    const never = Symbol('never')
+    const raced = await Promise.race([
+      promise,
+      new Promise((resolve) => { setTimeout(() => { resolve(never) }, 200) }),
+    ])
+    return raced === never ? 'still-pending' : raced
+  }
+
+  it('refuses a re-parented host without running anything at all', async () => {
+    // A host whose parent died is re-parented to PID 4 on Windows, which is the
+    // System process. Killing it is not a shutdown, so the check must come before
+    // the shell is even started.
+    const { run, asked } = makeRunner([])
+    const notes = []
+    const result = await outcome(terminateDesktopApp({ note: (line) => notes.push(line), pid: 4, run }))
+    assert.equal(result, null)
+    assert.deepEqual(asked, [], 'no shell was run')
+    assert.match(notes[0], /refused to terminate pid 4/)
+  })
+
+  it('looks before it kills, and stops when the name is not ours', async () => {
+    // The pid is evidence, not proof: it must still be the app. A wrong name is
+    // an ordinary "stop", not an escalation.
+    const { run, asked } = makeRunner([ok(true, false, 'notepad')])
+    const notes = []
+    const result = await outcome(terminateDesktopApp({
+      note: (line) => notes.push(line), pid: 4321, execPath: 'D:\\DeepSeekH\\DeepSeek Harness.exe', run,
+    }))
+    assert.deepEqual(result, { found: true, killed: false, name: 'notepad', error: null })
+    assert.deepEqual(asked, [true], 'the probe ran and nothing else did')
+    assert.match(notes.join('\n'), /it is "notepad", not "deepseek harness"/)
+  })
+
+  it('probes first, then kills, and reports the kill', async () => {
+    const { run, asked } = makeRunner([ok(true, false, 'DeepSeek Harness'), ok(true, true, 'DeepSeek Harness')])
+    const notes = []
+    const result = await outcome(terminateDesktopApp({
+      note: (line) => notes.push(line), pid: 4321, execPath: 'D:\\DeepSeekH\\DeepSeek Harness.exe', run,
+    }))
+    assert.equal(result.killed, true)
+    assert.deepEqual(asked, [true, false], 'look first, then kill')
+    assert.match(notes.join('\n'), /terminated pid 4321/)
+  })
+
+  it('treats an app that already went as closed, not as a failure', async () => {
+    const { run } = makeRunner([ok(false, false, null, 'Cannot find a process with the process ID 4321')])
+    const result = await outcome(terminateDesktopApp({ note: () => {}, pid: 4321, run }))
+    assert.equal(result.found, false)
+    assert.equal(result.killed, false)
+  })
+
+  it('stays pending while the process is still there, so the watchdog escalates', async () => {
+    // Resolving here would read as "settled" to the watchdog, which stands down
+    // and leaves the app running -- the exact bug this route is fixing.
+    const { run } = makeRunner([ok(true, false, 'DeepSeek Harness'), ok(true, false, 'DeepSeek Harness')])
+    const notes = []
+    const result = await outcome(terminateDesktopApp({
+      note: (line) => notes.push(line), pid: 4321, execPath: 'D:\\DeepSeekH\\DeepSeek Harness.exe', run,
+    }))
+    assert.equal(result, 'still-pending')
+    assert.match(notes.join('\n'), /survived the kill/)
+  })
+
+  it('settles so the watchdog can escalate when no shell could start', async () => {
+    const { run } = makeRunner([{ status: null, stdout: '', stderr: '', error: 'spawn powershell.exe ENOENT' }])
+    const notes = []
+    const result = await outcome(terminateDesktopApp({ note: (line) => notes.push(line), pid: 4321, run }))
+    assert.equal(result, null)
+    assert.match(notes.join('\n'), /could not start a shell/)
+  })
+
+  it('reads the app name out of an executable path', () => {
+    // PowerShell drops the extension, so both sides are normalised the same way.
+    assert.equal(executableName('D:\\DeepSeekH\\DeepSeek Harness.exe'), 'deepseek harness')
+    assert.equal(executableName('C:\\Program Files\\nodejs\\node.exe'), 'node')
+    assert.equal(executableName(''), '')
+    assert.equal(executableName(undefined), '')
   })
 })
