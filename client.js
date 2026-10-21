@@ -128,6 +128,7 @@ window.__ModuleLoader__.load({
         advancedSaving: '保存中…',
         advancedSaved: '已保存，下次退出即生效。',
         advancedFailed: '保存失败：',
+        advancedLocalOnly: '以下设置面向从本地构建启动 DSH 的情形（dsh web 命令行、源码检出、由脚本或服务管理器拉起）。桌面版由它自己的主进程管理退出，应用窗口切换会明确拒绝，但强制结束仍可用来兜底。',
         launchUnknown: '未知',
         shortcutAdopted: '已接管桌面快捷方式：',
         shortcutCreated: '已新建桌面快捷方式：',
@@ -192,6 +193,7 @@ window.__ModuleLoader__.load({
         advancedSaving: 'Saving\u2026',
         advancedSaved: 'Saved. It applies to the next exit.',
         advancedFailed: 'Could not save: ',
+        advancedLocalOnly: 'These settings are for a DSH started from a local build (a `dsh web` command line, a checkout, or a script / service manager). The desktop app manages its own exit, so switching the app window is refused there \u2014 but forcing the exit still works as a fallback.',
         launchUnknown: 'unknown',
         shortcutAdopted: 'Desktop shortcut adopted: ',
         shortcutCreated: 'Desktop shortcut created: ',
@@ -323,6 +325,41 @@ window.__ModuleLoader__.load({
 }
 .dpb-launch-value { color: var(--dsw-alias-label-primary, #111827); }
 .dpb-launch-note { color: var(--dsw-alias-label-secondary, #6b7280); }
+/* The fold that holds everything except the two power controls. Closed by
+   default: the mode switch restarts DSH and the three advanced values are for
+   local builds, so both are noise to somebody who came to close the process.
+   a details/summary pair rather than state, so the fold works before any hook
+   answer has arrived and needs no extra useState slot. (No backticks in this
+   block: it is a template literal.) */
+.dpb-fold {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+}
+.dpb-fold-summary {
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary, #6b7280);
+  font-size: 12px;
+  line-height: 1.6;
+  list-style: none;
+}
+.dpb-fold-summary::-webkit-details-marker { display: none; }
+.dpb-fold-summary::before {
+  content: "\\25B8\\00A0";
+  display: inline-block;
+  transition: transform 0.12s ease-out;
+}
+.dpb-fold[open] > .dpb-fold-summary::before { transform: rotate(90deg); }
+.dpb-fold-summary:hover { color: var(--dsw-alias-label-primary, #111827); }
+.dpb-local-only {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-l1, rgba(0, 0, 0, 0.03));
+  color: var(--dsw-alias-label-secondary, #6b7280);
+  font-size: 11px;
+  line-height: 1.55;
+}
 /* The advanced settings: three rarely-touched values, kept visually below the
    switch so the two controls somebody actually uses stay first. */
 .dpb-advanced {
@@ -1167,99 +1204,121 @@ window.__ModuleLoader__.load({
         ) : null,
         stopped && strategy === 'key' ? h('p', { className: 'dpb-hint', 'data-dsh-power-closehint': 'true' },
           t('closeHint')) : null,
-        h('div', { className: 'dpb-launch', 'data-dsh-power-launch': 'true' },
-          h('div', { className: 'dpb-launch-row' },
-            h('span', { className: 'dpb-launch-label' }, t('launchNow')),
-            h('span', {
-              className: 'dpb-launch-value',
-              'data-dsh-power-window-mode': strategy === 'auto' ? 'app' : (strategy === 'button' ? 'popup' : 'tab'),
-            }, strategy === 'auto' || strategy === 'button' ? t('launchModeApp') : t('launchModeTab')),
-            h('span', { className: 'dpb-launch-note' },
-              strategy === 'auto' ? t('launchClosesItself') : t('launchNeedsKey')),
+        /*
+         * Everything that is not "close the process" lives in this fold: the
+         * launch-mode switch (which restarts DSH) and the local-build settings
+         * (which the desktop app cannot use). Both are rarely the reason
+         * somebody opened this card, and the switch in particular looks like a
+         * second power control when it sits unfolded under the first one.
+         *
+         * A details element rather than a useState flag on purpose: the
+         * card's hooks are already asserted by position, the fold must survive
+         * a host whose settings read never answers, and `open` needs no
+         * re-render to work. `dpb-fold` is the single hook tests use to find it.
+         */
+        h('details', { className: 'dpb-fold', 'data-dsh-power-fold': 'true' },
+          h('summary', {
+            className: 'dpb-fold-summary',
+            'data-dsh-power-fold-summary': 'true',
+            title: t('advancedLocalOnly'),
+          }, t('advancedTitle')),
+          h('p', { className: 'dpb-local-only', 'data-dsh-power-local-only': 'true' }, t('advancedLocalOnly')),
+          h('div', { className: 'dpb-launch', 'data-dsh-power-launch': 'true' },
+            h('div', { className: 'dpb-launch-row' },
+              h('span', { className: 'dpb-launch-label' }, t('launchNow')),
+              h('span', {
+                className: 'dpb-launch-value',
+                'data-dsh-power-window-mode': strategy === 'auto' ? 'app' : (strategy === 'button' ? 'popup' : 'tab'),
+              }, strategy === 'auto' || strategy === 'button' ? t('launchModeApp') : t('launchModeTab')),
+              h('span', { className: 'dpb-launch-note' },
+                strategy === 'auto' ? t('launchClosesItself') : t('launchNeedsKey')),
+            ),
+            h('div', { className: 'dpb-launch-row' },
+              h('span', { className: 'dpb-launch-label' }, t('launchNext')),
+              h('span', { className: 'dpb-launch-value', 'data-dsh-power-stored-mode': storedMode ?? '?' },
+                storedMode === null ? t('launchUnknown') : modeLabel(storedMode)),
+            ),
+            h('p', { className: 'dpb-hint' }, t('launchSwitchHint')),
+            h('div', { className: 'dpb-row' },
+              h(primitives.Button, {
+                variant: 'outline',
+                // Disabled only while a switch is in flight, or before the first
+                // read has answered. A FAILED read keeps it usable: the switch does
+                // not depend on knowing the stored mode (it moves to the shape this
+                // window is not), so a dead settings read must not disable it.
+                disabled: switching || (storedMode === null && !modeError),
+                'data-dsh-power-switch': otherMode,
+                onClick: () => { void switchLaunchMode(otherMode) },
+              }, switching
+                ? t('launchSwitching')
+                : (otherMode === 'app' ? t('launchSwitchToApp') : t('launchSwitchToTab'))),
+            ),
+            // What the switch did to the desktop entry, on its own line. There is no
+            // button for this any more: the mode switch does it, because a stored mode
+            // only governs a COLD start when the icon that gets double-clicked starts
+            // the packaged launcher -- so asking for a second click was asking the
+            // person to finish a step the plugin already knew how to do.
+            shortcutLines === null
+              ? null
+              : h('div', { className: 'dpb-status', 'data-dsh-power-shortcut-status': 'true' },
+                ...shortcutLines.map((line, index) => h('div', { key: String(index) }, line))),
           ),
-          h('div', { className: 'dpb-launch-row' },
-            h('span', { className: 'dpb-launch-label' }, t('launchNext')),
-            h('span', { className: 'dpb-launch-value', 'data-dsh-power-stored-mode': storedMode ?? '?' },
-              storedMode === null ? t('launchUnknown') : modeLabel(storedMode)),
+          // The advanced settings, on their own block: rarely touched, and on DSH
+          // 0.1.7 this block is the only way to change them from a UI at all (the
+          // host generates settings forms, and this plugin declares no schema).
+          // The heading is the fold's summary now, so this block opens with no
+          // label of its own -- repeating it one line under the summary read as a
+          // stray duplicate when the fold opened.
+          advanced === null ? null : h('div', { className: 'dpb-advanced', 'data-dsh-power-advanced': 'true' },
+            h('div', { className: 'dpb-advanced-row' },
+              h('label', { className: 'dpb-advanced-label', htmlFor: 'dpb-power-delay' }, t('advancedDelay')),
+              h('input', {
+                id: 'dpb-power-delay',
+                type: 'number',
+                className: 'dpb-advanced-input',
+                min: 0,
+                max: 30000,
+                step: 100,
+                value: String(advanced.delayMs),
+                'data-dsh-power-delay': 'true',
+                onChange: (event) => { editAdvanced({ delayMs: Number(event.target.value) }) },
+              }),
+            ),
+            h('div', { className: 'dpb-advanced-row' },
+              h('label', { className: 'dpb-advanced-label', htmlFor: 'dpb-power-exit' }, t('advancedExit')),
+              h('input', {
+                id: 'dpb-power-exit',
+                type: 'number',
+                className: 'dpb-advanced-input',
+                min: 0,
+                max: 255,
+                step: 1,
+                value: String(advanced.exitCode),
+                'data-dsh-power-exit': 'true',
+                onChange: (event) => { editAdvanced({ exitCode: Number(event.target.value) }) },
+              }),
+            ),
+            h('label', { className: 'dpb-advanced-check' },
+              h('input', {
+                type: 'checkbox',
+                checked: advanced.hard === true,
+                'data-dsh-power-hard': 'true',
+                onChange: (event) => { editAdvanced({ hard: event.target.checked === true }) },
+              }),
+              t('advancedHard'),
+            ),
+            h('div', { className: 'dpb-row' },
+              h(primitives.Button, {
+                variant: 'outline',
+                disabled: savingAdvanced,
+                'data-dsh-power-save-advanced': 'true',
+                onClick: () => { void saveAdvanced() },
+              }, savingAdvanced ? t('advancedSaving') : t('advancedSave')),
+            ),
+            advancedLine === null
+              ? null
+              : h('div', { className: 'dpb-status', 'data-dsh-power-advanced-status': 'true' }, advancedLine),
           ),
-          h('p', { className: 'dpb-hint' }, t('launchSwitchHint')),
-          h('div', { className: 'dpb-row' },
-            h(primitives.Button, {
-              variant: 'outline',
-              // Disabled only while a switch is in flight, or before the first
-              // read has answered. A FAILED read keeps it usable: the switch does
-              // not depend on knowing the stored mode (it moves to the shape this
-              // window is not), so a dead settings read must not disable it.
-              disabled: switching || (storedMode === null && !modeError),
-              'data-dsh-power-switch': otherMode,
-              onClick: () => { void switchLaunchMode(otherMode) },
-            }, switching
-              ? t('launchSwitching')
-              : (otherMode === 'app' ? t('launchSwitchToApp') : t('launchSwitchToTab'))),
-          ),
-          // What the switch did to the desktop entry, on its own line. There is no
-          // button for this any more: the mode switch does it, because a stored mode
-          // only governs a COLD start when the icon that gets double-clicked starts
-          // the packaged launcher -- so asking for a second click was asking the
-          // person to finish a step the plugin already knew how to do.
-          shortcutLines === null
-            ? null
-            : h('div', { className: 'dpb-status', 'data-dsh-power-shortcut-status': 'true' },
-              ...shortcutLines.map((line, index) => h('div', { key: String(index) }, line))),
-        ),
-        // The advanced settings, on their own block: rarely touched, and on DSH
-        // 0.1.7 this block is the only way to change them from a UI at all (the
-        // host generates settings forms, and this plugin declares no schema).
-        advanced === null ? null : h('div', { className: 'dpb-advanced', 'data-dsh-power-advanced': 'true' },
-          h('span', { className: 'dpb-launch-label' }, t('advancedTitle')),
-          h('div', { className: 'dpb-advanced-row' },
-            h('label', { className: 'dpb-advanced-label', htmlFor: 'dpb-power-delay' }, t('advancedDelay')),
-            h('input', {
-              id: 'dpb-power-delay',
-              type: 'number',
-              className: 'dpb-advanced-input',
-              min: 0,
-              max: 30000,
-              step: 100,
-              value: String(advanced.delayMs),
-              'data-dsh-power-delay': 'true',
-              onChange: (event) => { editAdvanced({ delayMs: Number(event.target.value) }) },
-            }),
-          ),
-          h('div', { className: 'dpb-advanced-row' },
-            h('label', { className: 'dpb-advanced-label', htmlFor: 'dpb-power-exit' }, t('advancedExit')),
-            h('input', {
-              id: 'dpb-power-exit',
-              type: 'number',
-              className: 'dpb-advanced-input',
-              min: 0,
-              max: 255,
-              step: 1,
-              value: String(advanced.exitCode),
-              'data-dsh-power-exit': 'true',
-              onChange: (event) => { editAdvanced({ exitCode: Number(event.target.value) }) },
-            }),
-          ),
-          h('label', { className: 'dpb-advanced-check' },
-            h('input', {
-              type: 'checkbox',
-              checked: advanced.hard === true,
-              'data-dsh-power-hard': 'true',
-              onChange: (event) => { editAdvanced({ hard: event.target.checked === true }) },
-            }),
-            t('advancedHard'),
-          ),
-          h('div', { className: 'dpb-row' },
-            h(primitives.Button, {
-              variant: 'outline',
-              disabled: savingAdvanced,
-              'data-dsh-power-save-advanced': 'true',
-              onClick: () => { void saveAdvanced() },
-            }, savingAdvanced ? t('advancedSaving') : t('advancedSave')),
-          ),
-          advancedLine === null
-            ? null
-            : h('div', { className: 'dpb-status', 'data-dsh-power-advanced-status': 'true' }, advancedLine),
         ),
         phase === 'gone' ? h('p', { className: 'dpb-hint' }, t('reopenHint')) : null,
         pid === null ? null : h('p', { className: 'dpb-hint' },

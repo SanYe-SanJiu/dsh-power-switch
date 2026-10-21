@@ -475,6 +475,47 @@ describe('Plugins-page card registration', () => {
     } finally { bundle.restore() }
   })
 
+  it('keeps the mode switch and the advanced settings behind one closed fold', async () => {
+    // The card is opened to close or restart the process, and nothing else. The
+    // mode switch restarts DSH and the delay / exit-code / forced-exit values are
+    // for a locally built DSH, so both sat under the power control looking like
+    // more power controls. They now share one fold that starts closed -- and the
+    // fold is a `details` element, so it opens itself without a state slot.
+    const bundle = await loadBundle()
+    try {
+      // `revival: true` is what lets the card read the stored mode at all: with
+      // the switch off the card skips `readStoredMode`, and the advanced block --
+      // which is fed by the same read -- never mounts.
+      const mounted = bundle.mount('page', quietFetch, { revival: true })
+      await settle()
+      const fold = collect(mounted.tree, (node) => node.props?.['data-dsh-power-fold'] === 'true')[0]
+      assert.notEqual(fold, undefined, 'everything beyond the power control must sit in one fold')
+      assert.equal(fold.type, 'details')
+      assert.equal(fold.props.open, undefined, 'the fold starts closed; `open` is not even set')
+
+      // The two power controls stay OUTSIDE it, so they never need a click.
+      const foldChildren = Array.isArray(fold.props.children) ? fold.props.children : [fold.props.children]
+      const insideFold = new Set()
+      for (const child of foldChildren) for (const node of collect(child, () => true)) insideFold.add(node)
+      assert.equal(insideFold.has(byAction(mounted.tree)), false, 'the shutdown button must not be folded away')
+
+      // Both halves are inside: the launch switch and the advanced block.
+      assert.notEqual(bySwitch(mounted.tree), undefined, 'the launch switch lives in the fold')
+      assert.notEqual(
+        collect(mounted.tree, (node) => node.props?.['data-dsh-power-advanced'] === 'true')[0],
+        undefined,
+        'the advanced block lives in the fold',
+      )
+      // The summary names the fold and carries the local-build note.
+      const summary = collect(mounted.tree, (node) => node.props?.['data-dsh-power-fold-summary'] === 'true')[0]
+      assert.notEqual(summary, undefined, 'the fold needs a summary to click')
+      assert.match(textOf(summary), /高级设置/u)
+      const note = collect(mounted.tree, (node) => node.props?.['data-dsh-power-local-only'] === 'true')[0]
+      assert.match(textOf(note), /本地构建/u, 'the fold must say who these settings are for')
+      assert.match(textOf(note), /桌面版/u, 'and must not hide that the desktop app is different')
+    } finally { bundle.restore() }
+  })
+
   it('names itself first in the summary, so the row is recognisable', async () => {
     const bundle = await loadBundle()
     try {

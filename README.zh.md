@@ -18,11 +18,13 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 | 项目 | 要求 |
 |---|---|
 | 操作系统 | Windows 10 或更高 |
-| DSH | `>=0.1.6-alpha.2 <0.1.7-0 \|\| >=0.1.7-0 <0.2.0-0`（见 `package.json` 的 `engines.dsh`） |
+| DSH | `>=0.1.6-alpha.2 <0.1.7-0 \|\| >=0.1.7-0 <0.2.0-0 \|\| >=0.2.0-0 <0.3.0-0`（见 `package.json` 的 `engines.dsh`） |
 | Node.js | `>=20` |
 | Windows 脚本宿主 | 桌面快捷方式层需要 `cscript.exe` / `wscript.exe`。它可能被移除，或被杀毒软件、攻击面缩减（ASR）规则、组策略拦截——受管控的机器上这是真实情形，不是假设。遇到这种情况卡片会明确说明，而关闭进程、设置表单与模式切换本身不受影响。 |
 
-这个 DSH 范围按小版本线逐段列出，并不是装饰：DSH 至今只发布过预发布版，而 semver 只允许预发布版进入「同一 `major.minor.patch` 元组上带有预发布比较符」的范围——所以 `*`、`>=0.1.0` 以及单写一个 `>=0.1.6-alpha.2` 都放不进任何一个真实存在的 DSH 版本。下界取第一个自带 `@deepseek-ai/dsh-plugin-manager` 的 DSH 版本：在那之前既没有 `dsh plugin install`，也没有 `dsh.bundle` 这一层，本包根本无法安装。实测于 `0.1.6-alpha.2`（全套测试）与 `0.1.7` 线；DSH 将来出现新的小版本线时，这里需要再加一段。
+这个 DSH 范围按小版本线逐段列出，并不是装饰：DSH 至今只发布过预发布版，而 semver 只允许预发布版进入「同一 `major.minor.patch` 元组上带有预发布比较符」的范围——所以 `*`、`>=0.1.0` 以及单写一个 `>=0.1.6-alpha.2` 都放不进任何一个真实存在的 DSH 版本。下界取第一个自带 `@deepseek-ai/dsh-plugin-manager` 的 DSH 版本：在那之前既没有 `dsh plugin install`，也没有 `dsh.bundle` 这一层，本包根本无法安装。实测于 `0.1.6-alpha.2`（全套测试）、`0.1.7` 线与 `0.2.0-rc.2`（桌面版）；DSH 将来出现新的小版本线时，这里需要再加一段。
+
+`0.2.0-*` 那一段是核对过实现的，不是照抄版本号：`0.2.0-rc.2` 里的 `@deepseek-ai/dsh-host-webserver` 仍是 `extends Service` 上的 `webServer` 服务，`register({ kind, path, handler })` 的签名、重复路由抛错、返回注销函数、`port` getter 均未变，其 `@deepseek-ai/schemastery` 依赖（`~3.18.4`）也落在本包声明的 `>=3.18.1 <4` 内。
 
 ## 安装
 
@@ -32,16 +34,16 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ```powershell
 # ① 已安装 dsh 命令（npm 全局安装或桌面版）
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
 
 # ② 从源码检出运行，且检出已构建（存在 apps/cli/lib/bin.js）
 #    需在检出根目录执行
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
 
 # ③ 从源码检出运行，未构建或希望直接跑 TypeScript 源码
 #    需在检出根目录执行；官方开发文档（docs/user/develop/basic/publish.md）
 #    对源码检出的写法就是这条
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
 ```
 
 三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。
@@ -59,7 +61,7 @@ pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
 
 说明：
 
-- `--profile` 为必填项；Web UI 对应的 profile 名为 `web`（`dsh web` 等价于 `dsh --profile web`）。
+- `--profile` 为必填项；Web UI 对应的 profile 名为 `web`（`dsh web` 等价于 `dsh --profile web`）。桌面版对应的 profile 名为 `desktop`（见下文「桌面版」）。
 - `apps/cli/lib/bin.js` 是 `pnpm build` 的产物、不在仓库中，因此刚克隆的检出用 ③。
 - `add` 之后的参数原样转发给 pnpm，因此 npm 包名、`github:owner/repo[#ref]`、`link:路径` 与 tarball URL 均可使用。相对路径（`./x`、`../x`、`link:../x`）以执行命令时的工作目录为基准解析，而非以 profile 目录为基准。
 - 安装完成后，DSH 会自动将该包加入 profile 的 `dsh.profile.bundles`（该包声明了 `dsh.bundle.patch`），无需手工编辑 JSON。未声明 bundle patch 的包会收到"仅作为普通依赖安装"的提示。
@@ -197,6 +199,29 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 
 启动器不会重复启动实例：已有宿主在运行时仅打开窗口；端口有响应但无法获取有效 token 时拒绝启动并输出原因。
 
+## 桌面版
+
+DSH 的桌面版（`DeepSeek Harness.exe`，Electron 打包）用 `--profile desktop`，与本插件的 `web` profile 是两套独立安装。本插件**可以**装进桌面版 profile，但两者的契合度不同：
+
+| 功能 | 桌面版情形 |
+|---|---|
+| 关闭进程 | 可用，但**退化为强制退出**：桌面版不提供 `ctx.appExit`，插件会记下「no graceful exit available; ending the process now」后直接结束进程。会话落盘由 DSH 自身的持久化节奏保证，不是本插件拦出来的 |
+| 重启 | 可用。它不依赖 `appExit`，走的是插件自己的督导进程 |
+| 启动方式切换 | **明确拒绝**。桌面版本就是应用窗口，没有标签页形态可切；插件会返回 `refused` 并说明原因，不做任何改动 |
+| `delayMs` / `exitCode` | 无人读取。桌面版的退出由它的 Electron 主进程管理，这两个值只对从终端、脚本或服务管理器拉起的 DSH 有意义 |
+| `hard` | 可用，是桌面版里唯一有意义的兜底——它就是强制结束那条路径 |
+| 桌面快捷方式层 | **不会碰桌面版的图标**。`classifyShortcut` 把目标指向 `DeepSeek Harness.exe`（或路径含 `desktop-host`、`electron`）的快捷方式判为 `other` 并排除，既不改写也不还原 |
+
+安装到桌面版 profile：
+
+```powershell
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+```
+
+装完需要重启桌面版。判断装没装对，看 `%USERPROFILE%\.dsh\profiles\desktop\package.json` 的 `dsh.profile.bundles` 里是否出现 `dsh-power-switch`。
+
+一句话：**如果你只用桌面版，这个插件的价值只剩下「重启」和「强制结束」**——桌面版的窗口自带 `X`，本来就不需要关闭按钮。完整功能（优雅退出、启动方式切换、退出前等待与退出码）面向的是从终端或脚本拉起 DSH 的情形。
+
 ## 状态与日志
 
 运行时状态位于 **`$DSH_HOME/storages/dsh-power-switch/`**，不在包目录内：
@@ -228,7 +253,11 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 | `exitCode` | `0` | DSH 进程结束时返回给启动它的那一方的状态码——终端（`$LASTEXITCODE`）、服务管理器、脚本。`0` 表示成功，因此非 0 是留给包装脚本用来区分"用户主动关闭"和"崩溃异常"的 |
 | `hard` | `false` | 跳过优雅退出，直接结束进程 |
 
-`launchMode` 由卡片切换；其余三项在卡片自带的**高级设置**块里修改，写入状态目录的 `settings.json`。该块存在的原因：在生成式设置表单的 DSH（0.1.7）上，未声明 schema 的插件拿不到任何表单，没有它这三项就只能手改 profile patch。若宿主仍提供"注册命名空间"那套设置 API，同一次保存也会写入设置文档，使两个界面不会各说各话；最终以记录值为准，删除 `settings.json` 即把决定权交回 loader row 的 `config:` 与设置文档。
+卡片默认只展开两个电源控件（关闭、重启）。启动方式开关与以上三项都在卡片底部一个**默认收起**的「高级设置」折叠区里。
+
+**这四项面向从本地构建启动 DSH 的情形**：`dsh web` 命令行、源码检出，或由脚本 / 服务管理器拉起。桌面版（Electron）由它自己的主进程管理退出，启动方式切换会明确拒绝（见下文），`delayMs` 与 `exitCode` 也无人读取；只有 `hard` 在桌面版里仍是可用的兜底——它是强制结束那条路径。
+
+`launchMode` 由卡片切换；其余三项在**高级设置**块里修改，写入状态目录的 `settings.json`。该块存在的原因：在生成式设置表单的 DSH（0.1.7）上，未声明 schema 的插件拿不到任何表单，没有它这三项就只能手改 profile patch。若宿主仍提供"注册命名空间"那套设置 API，同一次保存也会写入设置文档，使两个界面不会各说各话；最终以记录值为准，删除 `settings.json` 即把决定权交回 loader row 的 `config:` 与设置文档。
 
 卡片**不再**自己附带延迟：`delayMs` 管辖所有退出路径，包括卡片上的按钮。（它以前会附上 700ms"让界面更快响应"——这个数既不可能起作用（低于响应本身需要的 1200ms），又静默地压过了使用者刚保存的设置。）想要一次性延迟的调用方仍可在关闭请求体里带 `delayMs`，对该次请求优先于设置。勾选 `hard` 时，进程改为在同一个等待之后结束，而不是等 watchdog。
 

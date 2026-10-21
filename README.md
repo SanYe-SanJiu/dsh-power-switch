@@ -18,11 +18,13 @@ App-window mode depends on a desktop shortcut (Windows Script Host and `.lnk`), 
 | Item | Requirement |
 |---|---|
 | Operating system | Windows 10 or later |
-| DSH | `>=0.1.6-alpha.2 <0.1.7-0 \|\| >=0.1.7-0 <0.2.0-0` (see `engines.dsh` in `package.json`) |
+| DSH | `>=0.1.6-alpha.2 <0.1.7-0 \|\| >=0.1.7-0 <0.2.0-0 \|\| >=0.2.0-0 <0.3.0-0` (see `engines.dsh` in `package.json`) |
 | Node.js | `>=20` |
 | Windows Script Host | Required by the desktop-shortcut layer (`cscript.exe` / `wscript.exe`). It can be removed, or blocked by antivirus, Attack Surface Reduction rules or group policy — a locked-down machine is a real case, not a hypothetical one. When that happens the card says so in its own words, and the shutdown feature, the settings section and the mode switch are unaffected. |
 
-The DSH range is spelled per minor line, and that is not decoration: DSH has only ever published prereleases, and semver admits a prerelease into a range only when a comparator **on the same `major.minor.patch`** carries a prerelease of its own — so `*`, `>=0.1.0` and a bare `>=0.1.6-alpha.2` all admit no DSH build that exists. The floor is the first DSH release shipping `@deepseek-ai/dsh-plugin-manager`: before it there is no `dsh plugin install` and no `dsh.bundle` layer, so this package cannot be installed at all. Tested against `0.1.6-alpha.2` (the full suite) and the `0.1.7` line; a new DSH minor line needs another branch here.
+The DSH range is spelled per minor line, and that is not decoration: DSH has only ever published prereleases, and semver admits a prerelease into a range only when a comparator **on the same `major.minor.patch`** carries a prerelease of its own — so `*`, `>=0.1.0` and a bare `>=0.1.6-alpha.2` all admit no DSH build that exists. The floor is the first DSH release shipping `@deepseek-ai/dsh-plugin-manager`: before it there is no `dsh plugin install` and no `dsh.bundle` layer, so this package cannot be installed at all. Tested against `0.1.6-alpha.2` (the full suite), the `0.1.7` line and `0.2.0-rc.2` (the desktop app); a new DSH minor line needs another branch here.
+
+The `0.2.0-*` branch was checked against the implementation rather than copied from a version string: in `0.2.0-rc.2` the `@deepseek-ai/dsh-host-webserver` package still exposes the `webServer` service on `extends Service`, and the `register({ kind, path, handler })` signature, the duplicate-route throw, the returned disposer and the `port` getter are all unchanged. Its own `@deepseek-ai/schemastery` dependency (`~3.18.4`) also falls inside this package's `>=3.18.1 <4`.
 
 ## Install
 
@@ -32,17 +34,17 @@ You should cd to the deepseek harness folder first
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
 
 # ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
 #    run this from the checkout root
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
 
 # ③ running from a source checkout that is not built, or you prefer the TypeScript
 #    sources — this is the form the upstream development documentation
 #    (docs/user/develop/basic/publish.md) gives for a source checkout
 #    run this from the checkout root
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.4
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
 ```
 
 All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
@@ -201,6 +203,29 @@ node scripts/launch-dsh.mjs --cli <path to the dsh CLI entry>   # name the CLI e
 
 The launcher never starts a duplicate instance: when a host is already serving it only opens the window, and when the port answers but no live token can be obtained it refuses to start and reports why.
 
+## The desktop app
+
+DSH's desktop build (`DeepSeek Harness.exe`, packaged with Electron) runs under `--profile desktop`, which is a separate install from this plugin's `web` profile. The plugin **can** be installed into the desktop profile, but the two fit together unevenly:
+
+| Feature | Under the desktop app |
+|---|---|
+| Shutdown | Works, but **degrades to a forced exit**: the desktop app provides no `ctx.appExit`, so the plugin records "no graceful exit available; ending the process now" and ends the process directly. Session persistence is DSH's own timing, not something this plugin holds up |
+| Restart | Works. It does not depend on `appExit`; it goes through the plugin's own supervisor |
+| Launch-mode switch | **Refused**, explicitly. The desktop app *is* an app window, so there is no tab form to switch to; the plugin answers `refused` with its reason and changes nothing |
+| `delayMs` / `exitCode` | Nobody reads them. The desktop app's exit is managed by its Electron main process; these two values only mean something for a DSH started from a terminal, a script or a service manager |
+| `hard` | Works, and is the only fallback that means anything in the desktop app — it is the forced-exit path |
+| Desktop shortcut layer | **The desktop icon is never touched.** `classifyShortcut` judges a shortcut whose target is `DeepSeek Harness.exe` (or whose path mentions `desktop-host` or `electron`) as `other` and leaves it out — neither rewritten nor restored |
+
+Installing into the desktop profile:
+
+```powershell
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.5
+```
+
+Restart the desktop app afterwards. To check the install landed, look for `dsh-power-switch` in `dsh.profile.bundles` of `%USERPROFILE%\.dsh\profiles\desktop\package.json`.
+
+In one sentence: **if you only use the desktop app, what is left of this plugin is "restart" and "forced exit"** — the desktop window already has its own close button, so it never needed a shutdown button. The full feature set (graceful exit, launch-mode switching, the pre-exit wait and the exit code) is for a DSH started from a terminal or a script.
+
 ## State and logs
 
 Runtime state lives in **`$DSH_HOME/storages/dsh-power-switch/`**, never inside the package:
@@ -233,7 +258,11 @@ The card's configuration page, or the loader row's `config:`:
 | `exitCode` | `0` | The status the DSH process ends with, for whatever started it — a shell (`$LASTEXITCODE`), a service manager, a script. `0` is success, so a non-zero value is for a wrapper that wants to tell "the person closed DSH" apart from a crash |
 | `hard` | `false` | Skip the graceful path and end the process at once |
 
+All four are for a DSH **started from a local build**: the `dsh web` command line, a source checkout, or something a script or service manager pulls up. The desktop app (Electron) manages its own exit, its launch-mode switch is refused outright (see "The desktop app" above), and nothing reads `delayMs` or `exitCode` there; only `hard` still means something, being the forced-exit path.
+
 `launchMode` is switched from the card. The other three are edited from the card's own **Advanced settings** block, which writes them to `settings.json` in the state directory. That block exists because it is the only UI for those three on a DSH that generates settings forms (0.1.7) — a plugin without a declared schema gets no generated form, so without it they would be editable only by hand-editing the profile patch. On a host that still has the registered-namespace settings API, the same save is written to the settings document as well, so the two surfaces cannot disagree; the recorded value is the one that governs, and deleting `settings.json` hands the decision back to the loader row's `config:` and the settings document.
+
+The card opens on the two power controls alone. The launch-mode switch and the three advanced values share one **Advanced settings** fold that starts closed.
 
 The card sends **no** delay of its own: `delayMs` governs every exit, the card's buttons included. (It used to send 700 ms "so the interface reacts sooner" — a number that could not matter, being below the 1200 ms the answer needs, and that silently outranked the setting.) A caller that wants a one-off delay can still put `delayMs` in the shutdown request body, which outranks the setting for that request only. With `hard`, the process ends after that same wait instead of after the watchdog.
 
