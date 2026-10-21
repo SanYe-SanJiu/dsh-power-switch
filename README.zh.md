@@ -34,16 +34,16 @@ DeepSeek Harness（DSH）插件，提供两项功能：
 
 ```powershell
 # ① 已安装 dsh 命令（npm 全局安装或桌面版）
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.9
 
 # ② 从源码检出运行，且检出已构建（存在 apps/cli/lib/bin.js）
 #    需在检出根目录执行
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.9
 
 # ③ 从源码检出运行，未构建或希望直接跑 TypeScript 源码
 #    需在检出根目录执行；官方开发文档（docs/user/develop/basic/publish.md）
 #    对源码检出的写法就是这条
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.9
 ```
 
 三种入口**完全等价**，本文其余命令都可照此替换（把 `dsh` 换成 `node apps\cli\lib\bin.js` 或 `pnpm dsh`）。
@@ -201,7 +201,7 @@ node scripts/launch-dsh.mjs --cli <dsh CLI 入口路径>    # 指定 CLI 入口
 
 ## 桌面版
 
-DSH 的桌面版（`DeepSeek Harness.exe`，Electron 打包）用 `--profile desktop`，与本插件的 `web` profile 是两套独立安装。本插件**可以**装进桌面版 profile，且 1.1.8 起关闭进程在桌面版下是真正可用的——但走的是与命令行不同的通道。
+DSH 的桌面版（`DeepSeek Harness.exe`，Electron 打包）用 `--profile desktop`，与本插件的 `web` profile 是两套独立安装。本插件**可以**装进桌面版 profile，且从 1.1.8 起关闭进程、从 1.1.9 起重启，在桌面版下都是真正可用的——但走的是与命令行不同的通道。
 
 **为什么通道必须不同。** 桌面版的宿主进程是 Electron 主进程 `fork` 出来的子进程。它的 `ctx.appExit` 就是 DSH 的 `shutdown(code)`，而实测 `@deepseek-ai/dsh` 0.2.x 的实现是：
 
@@ -212,15 +212,17 @@ shutdown(code){ return start(code, false) }   // forceAfterDispose = false
 
 它只设置退出码、**不调用 `process.exit`**；只有 dispose 卡住超过 5 秒才会强制结束。命令行宿主能正常退出，是因为 CLI 主进程处理完就结束了；而 Electron 主进程的事件循环由 app 持有，设个退出码不会让它退出。结果是：路由回了成功、页面显示「正在关闭」、DSH 却还在跑。
 
-桌面版自己的停止通道是 IPC。Electron 主进程发 `{ type: 'shutdown' }`，`dsh-desktop-host` 收到后执行 `await shutdown.shutdown(0)`、回报 `{ type: 'shutdown-complete' }`、再 `process.disconnect()`。插件 1.1.6 起先走这条通道：`isDesktopHost()` 以「存在 `process.send` 且 `connected === true`」判定，`requestDesktopShutdown()` 发出上面那条消息；通道不可用时才退回 `appExit` → `SIGTERM` 的原有路径。
+桌面版自己的停止通道是 IPC。Electron 主进程发 `{ type: 'shutdown' }`，`dsh-desktop-host` 收到后执行 `await shutdown.shutdown(0)`、回报 `{ type: 'shutdown-complete' }`、再 `process.disconnect()`。插件 1.1.6 曾**先**走这条通道（1.1.9 已移除，原因见下）：`isDesktopHost()` 以「存在 `process.send` 且 `connected === true`」判定，`requestDesktopShutdown()` 发出上面那条消息；通道不可用时才退回 `appExit` → `SIGTERM` 的原有路径。
 
 之所以用 IPC 通道而不是可执行文件名来判定：源码检出、打包安装、自定义安装的可执行文件名各不相同，而 IPC 通道是「这个进程是被 fork 出来的」这一事实本身，命令行宿主没有它。
 
 **但 IPC 通道不够，这是 1.1.8 修掉的问题。** `{ type: 'shutdown' }` 最终仍然落到上面那个 `shutdown()` 上——设退出码、清掉自己的看门狗、然后保持存活。实测在打包的 0.2.0-rc.2 上：路由回 `ok`、页面显示「正在关闭」、DSH 还在跑。所以桌面版需要 DSH 树之外的终止者，插件现在的做法是：
 
-1. 先发 IPC `{ type: 'shutdown' }`，让能干净停的宿主照旧干净停；
-2. 起一个 PowerShell 进程，先**只读探针**确认 `process.ppid` 那个进程存在、且名字与本进程的可执行文件同名（`DeepSeek Harness.exe` → `DeepSeek Harness`）；名字不对就不杀；
-3. 确认后对**主进程**调 `Process.Kill()`。杀主进程而不是杀宿主：宿主是 `fork` 出来的子进程，结束主进程一步关掉窗口、宿主和所有渲染进程，不留孤儿（实测：3 个子进程 + 主进程被杀，零残留）。反过来杀宿主，主进程会判定「子进程崩溃」并弹一个 `dsh desktop host stopped` 的模态框——正是这条路要避免的。
+1. 起一个 PowerShell 启动器（`windowsHide`，从创建那一刻起就没有窗口），它把助手交给 **WMI** 创建——这样助手不在应用的进程树里，不会随它一起被结束；
+2. 助手先**只读探针**确认 `process.ppid` 那个进程存在、且名字与本进程的可执行文件同名（`DeepSeek Harness.exe` → `DeepSeek Harness`）；名字不对就不杀；
+3. 确认后对**主进程**调终止。杀主进程而不是杀宿主：宿主是 `fork` 出来的子进程，结束主进程一步关掉窗口、宿主和所有渲染进程，不留孤儿（实测：3 个子进程 + 主进程被杀，零残留）。反过来杀宿主，主进程会判定「子进程崩溃」并弹一个 `dsh desktop host stopped` 的模态框——正是这条路要避免的。
+
+1.1.8 曾经在终止之前先发一条 IPC `{ type: 'shutdown' }`。**这一步在 1.1.9 被删掉了**：主进程收到它就先把宿主停掉，助手往往还没开始跑，宿主就已经死了。结果是主进程把子进程退出判为失败、弹出崩溃框，而窗口还在——日志里表现为 `desktop host:` 之后一行都没有。先发 IPC 买到的是一段延迟，不是一次干净的退出。
 
 实测取舍（同一台机器，重复多次）：
 
@@ -228,18 +230,40 @@ shutdown(code){ return start(code, false) }   // forceAfterDispose = false
 |---|---|
 | Python `TerminateProcess` 打主进程 | ✅ 成功，无残留 |
 | PowerShell `Process.Kill()` 打主进程 | ✅ 成功，无残留 |
+| VBScript 经 WMI `Win32_Process.Terminate` 打主进程 | ✅ 成功，100 ms 内消失——助手现在走这条 |
 | `taskkill /PID <主进程> /F` | ❌ `ERROR: Access denied` |
 | 杀光全部子进程 | ⚠️ 整个应用会退出，但主进程先弹一个崩溃框 |
 | 向主进程发 IPC | ❌ 无退出通道（19 个通道里没有关闭/重启入口） |
 
 `taskkill` 被拒与沙箱无关：打包的桌面版会装一条 `dshMandatoryUpdatePolicy` 限制辅助进程能动什么，而带着真实句柄的 `TerminateProcess` 不受它约束，PowerShell 的 `Process.Kill()` 走的正是这条。
 
+**助手为什么是 VBScript 而不是 PowerShell，这是 1.1.9 修掉的问题。** 由 WMI 创建的进程会得到一个**新控制台**。`powershell.exe` 属 CONSOLE 子系统，于是重启过程中屏幕上会闪一个黑色命令行窗口、任务栏也会多出它——`-WindowStyle Hidden` 只是把一个已经创建出来的窗口隐藏掉，隐藏之前的那一帧仍然看得见。反过来，`wscript.exe` 属 **GUI 子系统**，根本不创建控制台，所以既没有可闪的窗口，也没有可隐藏的东西；助手要做的那些事（等待、查 pid、终止、重新启动）VBScript 全都能做，而且都不需要控制台。
+
+也给 WMI 传过 `CREATE_NO_WINDOW`（`Win32_ProcessStartup.CreateFlags = 0x08000000`，这是唯一「连创建都不创建」的保证）。三种写法在本机都是 `ReturnValue=21`——参数被拒。所以绕开了它。
+
+还有一个容易被忽略的连带问题：助手最初用 `Start-Process` 启动 DSH，新实例会**继承助手的控制台**，于是关掉那个黑色窗口就等于给所有 attach 到它的进程发 `CTRL_CLOSE_EVENT`，DSH 跟着退出。现在 DSH 也由助手经 WMI 启动，不继承任何控制台，也不属于任何 job 对象——关别的窗口不会带走它。
+
+**重启（1.1.9 起）。** 复用的正是上面那个终止者：它不重放命令行，而是按固定顺序走完四步，最后用同一个可执行文件启动新实例。
+
+| 步骤 | 为什么必须在这一步 |
+|---|---|
+| 1. 杀主进程 | 窗口在这里消失 |
+| 2. 杀宿主 | 宿主是主进程 `fork` 出来的子进程，父进程死后它会成为孤儿并占着端口，新实例会撞上 |
+| 3. 等 | Electron 退出时才释放单实例锁；起早了会被静默当成「已在运行」丢弃 |
+| 4. 启动可执行文件 | 同一个文件、同一个工作目录 |
+
+第 2、3 步之间是**轮询**而不是固定睡眠：进程有没有退出是可以检查的事实。第一版固定睡 1200 ms 再睡 2500 ms，每次重启约 4.5 秒；现在实测通常 1 秒左右完成。
+
+第 4 步有守卫：可执行文件必须仍在磁盘上，否则宁可保持关闭也不半启动——这一点会明确告诉使用者，因为「重启失败」实际上就是「关闭」。
+
+**为什么不重放启动命令行。** 重启原本靠重放宿主自己的 argv，而桌面版的 argv 是 `app.asar\dsh <profile> <runtime> ...`——那是子进程的命令行，重放它只会得到一个没有 Electron 外壳的孤儿宿主，窗口永远不会出现。所以 `looksLikeDshWeb()` 在桌面版上判定「无法重放」是正确的；1.1.9 改变的是**不重放也有办法重启**，而不是放宽那条判断。
+
 **还有一处必须是异步的。** `gracefulExit` 若立刻 resolve，看门狗会把它读成「已经交接完毕」并撤离（`graceful exit settled; the watchdog stands down`），进程于是留在原地——这正是这条路曾经"报告成功却什么也没关"的机制。所以桌面分支返回的 promise 在进程真正消失前**不会 resolve**，撤离看门狗的强制退出路径一直挂着。上表里"杀不动"的情形也按此处理：不 resolve，交给看门狗升级。
 
 | 功能 | 桌面版情形 |
 |---|---|
-| 关闭进程 | **可用**：IPC 停止 → 只读探针 → 终止主进程（见上）。任何一步失败，看门狗 5 秒后强制退出 |
-| 重启 | **不可用，且是设计上拒绝**。重启靠重放启动命令行，桌面版不是以 `dsh web` 拉起的；`relaunchPlan` 返回 `unsupported-host`，卡片如实说明原因，不做无用的尝试 |
+| 关闭进程 | **可用**：只读探针 → 终止主进程（见上）。任何一步失败，看门狗 5 秒后强制退出 |
+| 重启 | **可用**（1.1.9 起）：同一个助手先杀主进程、再杀宿主、等单实例锁释放、重新启动可执行文件。不再重放命令行，也不再返回 `unsupported-host` |
 | 启动方式切换 | **明确拒绝**。桌面版本就是应用窗口，没有标签页形态可切；插件会返回 `refused` 并说明原因，不做任何改动 |
 | `delayMs` / `exitCode` | 无人读取。桌面版的退出由它的 Electron 主进程管理，这两个值只对从终端、脚本或服务管理器拉起的 DSH 有意义 |
 | `hard` | 强制结束路径：跳过优雅退出，直接走终止 |
@@ -250,14 +274,14 @@ shutdown(code){ return start(code, false) }   // forceAfterDispose = false
 安装到桌面版 profile：
 
 ```powershell
-dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.9
 ```
 
 装完需要重启桌面版。判断装没装对，看 `%USERPROFILE%\.dsh\profiles\desktop\package.json` 的 `dsh.profile.bundles` 里是否出现 `dsh-power-switch`。
 
 **升级注意**：若不写 `#vX.Y.Z`，pnpm 会按分支 ref 缓存，重复 `add` 可能仍拿到旧版本。升级时请显式写上 tag，或先 `dsh plugin --profile desktop remove dsh-power-switch` 再安装。
 
-一句话：桌面版的窗口自带 `X`，本插件在那里的意义是**把关闭做对**（真正结束进程、给出正确的关闭/重启/取消三选一）。从终端或脚本拉起 DSH 时，它还额外提供退出前等待与退出码；桌面版下「重启」会明确告诉你它做不到。
+一句话：桌面版的窗口自带 `X`，本插件在那里的意义是**把关闭与重启做对**（真正结束进程、真正替换掉它、给出正确的取消 / 重启 / 确认关闭三选一），而且全程不弹命令行窗口。从终端或脚本拉起 DSH 时，它还额外提供退出前等待与退出码。
 
 ## 状态与日志
 

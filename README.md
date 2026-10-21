@@ -34,17 +34,17 @@ You should cd to the deepseek harness folder first
 
 ```powershell
 # ① the `dsh` command is installed (npm global install, or the desktop app)
-dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
+dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.9
 
 # ② running from a source checkout that has been built (apps/cli/lib/bin.js exists)
 #    run this from the checkout root
-node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
+node apps\cli\lib\bin.js plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.9
 
 # ③ running from a source checkout that is not built, or you prefer the TypeScript
 #    sources — this is the form the upstream development documentation
 #    (docs/user/develop/basic/publish.md) gives for a source checkout
 #    run this from the checkout root
-pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
+pnpm dsh plugin --profile web add github:SanYe-SanJiu/dsh-power-switch#v1.1.9
 ```
 
 All three entries are **exactly equivalent**, and every other command in this document can be substituted the same way (replace `dsh` with `node apps\cli\lib\bin.js` or `pnpm dsh`).
@@ -205,7 +205,7 @@ The launcher never starts a duplicate instance: when a host is already serving i
 
 ## The desktop app
 
-DSH's desktop build (`DeepSeek Harness.exe`, packaged with Electron) runs under `--profile desktop`, which is a separate install from this plugin's `web` profile. The plugin **can** be installed into the desktop profile, and since 1.1.8 shutdown there actually works — but over a different channel than on the command line.
+DSH's desktop build (`DeepSeek Harness.exe`, packaged with Electron) runs under `--profile desktop`, which is a separate install from this plugin's `web` profile. The plugin **can** be installed into the desktop profile, and since 1.1.8 shutdown and since 1.1.9 restart both actually work there — over different channels than on the command line.
 
 **Why the channel has to differ.** The desktop host is a child the Electron main process `fork`s. Its `ctx.appExit` is DSH's own `shutdown(code)`, and in `@deepseek-ai/dsh` 0.2.x that is:
 
@@ -216,15 +216,17 @@ shutdown(code){ return start(code, false) }   // forceAfterDispose = false
 
 It sets an exit code and **never calls `process.exit`**; only a disposal that overruns 5 s is forced. A CLI host still goes away because the CLI's own main finishes. An Electron main process keeps its event loop alive, so setting a code closes nothing. The observable result: the route answers ok, the page says "closing", and DSH is still running.
 
-The desktop app's own stop channel is IPC. The Electron main process sends `{ type: 'shutdown' }`; `dsh-desktop-host` answers by running `await shutdown.shutdown(0)`, reporting `{ type: 'shutdown-complete' }` and then `process.disconnect()`. Since 1.1.6 the plugin asks that way first: `isDesktopHost()` decides on "has `process.send` and `connected === true`", and `requestDesktopShutdown()` sends exactly that message. Only when the channel is unusable does it fall back to `appExit` and then `SIGTERM`.
+The desktop app's own stop channel is IPC. The Electron main process sends `{ type: 'shutdown' }`; `dsh-desktop-host` answers by running `await shutdown.shutdown(0)`, reporting `{ type: 'shutdown-complete' }` and then `process.disconnect()`. 1.1.6 asked that way **first** (removed in 1.1.9, for the reason below): `isDesktopHost()` decides on "has `process.send` and `connected === true`", and `requestDesktopShutdown()` sends exactly that message. Only when the channel is unusable does it fall back to `appExit` and then `SIGTERM`.
 
 The check is the IPC channel rather than the executable name on purpose: a source checkout, a packaged install and a custom installer all produce different executable names, while the channel is the fact that matters — a CLI host does not have one.
 
 **The IPC channel is not enough, and that is what 1.1.8 fixes.** `{ type: 'shutdown' }` still lands on that same `shutdown()` — set the code, clear its own watchdog, stay alive. Measured on the packaged 0.2.0-rc.2: the route answered ok, the page said "closing", DSH kept running. So the desktop case needs a terminator outside the DSH tree. What the plugin does now:
 
-1. Send the IPC `{ type: 'shutdown' }` first, so a host that *can* stop cleanly still does;
-2. Start PowerShell and **probe read-only**: is `process.ppid` running, and does its name match this host's own executable (`DeepSeek Harness.exe` → `DeepSeek Harness`)? A mismatched name is not killed;
-3. Then `Process.Kill()` the **main** process. The host is a `fork` child of it, so ending the main process closes the window, the host and every renderer in one step with no orphan behind (measured: main plus three children killed, zero survivors). Killing the host instead makes the main process report a crash — a `dsh desktop host stopped` modal — which is exactly the dialog this route exists to avoid.
+1. Start a PowerShell launcher (`windowsHide`, so it has no window from the moment it exists) which has **WMI** create the helper — that keeps the helper outside the app's process tree, so ending the app does not end it mid-task;
+2. The helper **probes read-only**: is `process.ppid` running, and does its name match this host's own executable (`DeepSeek Harness.exe` → `DeepSeek Harness`)? A mismatched name is not killed;
+3. Then it terminates the **main** process. The host is a `fork` child of it, so ending the main process closes the window, the host and every renderer in one step with no orphan behind (measured: main plus three children killed, zero survivors). Killing the host instead makes the main process report a crash — a `dsh desktop host stopped` modal — which is exactly the dialog this route exists to avoid.
+
+1.1.8 also sent the IPC `{ type: 'shutdown' }` before terminating. **That step was removed in 1.1.9**: the main process stops the host as soon as it receives it, so the host often died before the helper had started. The main process then read the child's exit as a failure and showed the crash dialog while the window stayed up — which looked, in the log, like nothing at all after `desktop host:`. Sending the IPC first bought a delay, not a clean exit.
 
 What was measured on one machine, repeatedly:
 
@@ -232,18 +234,40 @@ What was measured on one machine, repeatedly:
 |---|---|
 | Python `TerminateProcess` on the main pid | ✅ works, no leftovers |
 | PowerShell `Process.Kill()` on the main pid | ✅ works, no leftovers |
+| VBScript `Win32_Process.Terminate` via WMI on the main pid | ✅ works, gone within 100 ms — this is what the helper uses now |
 | `taskkill /PID <main> /F` | ❌ `ERROR: Access denied` |
 | Killing every child instead | ⚠️ the whole app does exit, but the main process shows a crash dialog first |
 | Asking the main process over IPC | ❌ there is no quit channel (none of its 19 channels offers quit or restart) |
 
 `taskkill` being refused is not a sandbox artefact: the packaged app installs a `dshMandatoryUpdatePolicy` restricting what helper processes may do to it, and a real `TerminateProcess` handle is not covered by it — which is the path PowerShell's `Process.Kill()` takes.
 
+**Why the helper is VBScript and not PowerShell — this is what 1.1.9 fixes.** A process created by WMI gets a **new console**. `powershell.exe` is a CONSOLE-subsystem program, so a restart flashed a black command window and put an entry in the taskbar; `-WindowStyle Hidden` only hides a window that already exists, and the frame before it is hidden is still visible. `wscript.exe` is a **GUI-subsystem** program: it never creates a console, so there is nothing to flash and nothing to hide, and the helper's work — wait, check a pid, terminate it, start again — needs no console at all.
+
+`CREATE_NO_WINDOW` was tried too (`Win32_ProcessStartup.CreateFlags = 0x08000000`, the only guarantee that no console is created at all). All three spellings answered `ReturnValue=21` on this machine — the parameter is refused — so the route went around it.
+
+One related failure is easy to miss: the helper first started DSH with `Start-Process`, so the new instance **inherited the helper's console**. Closing that black window sends `CTRL_CLOSE_EVENT` to everything attached to it, and the freshly started DSH exited with it. DSH is now started by the helper through WMI as well: it inherits no console and belongs to no job object, so closing some other window cannot take it down.
+
+**Restart, since 1.1.9.** It reuses that same terminator: rather than replaying a command line, it walks a fixed four-step order and finally starts the executable again.
+
+| Step | Why it has to be in that position |
+|---|---|
+| 1. Kill the main process | The window disappears here |
+| 2. Kill the host | The host is the main process's `fork` child; when the parent dies it survives as an orphan holding the port, and the new instance would collide with it |
+| 3. Wait | Electron releases its single-instance lock only on exit; starting too early is silently treated as "already running" and discarded |
+| 4. Start the executable | Same file, same working directory |
+
+Steps 2 and 3 are **polls**, not fixed sleeps: whether a process has exited is a fact that can be checked. The first version slept 1200 ms and then 2500 ms, making every restart about 4.5 s; it now usually completes in about a second.
+
+Step 4 is guarded: the executable must still be on disk, and otherwise the app is left closed rather than half-started — which is reported plainly, because a restart that cannot start is a shutdown.
+
+**Why restart does not replay the launch command line.** It used to, and the desktop app's argv is `app.asar\dsh <profile> <runtime> ...` — a child process's command line. Replaying it only produces an orphan host with no Electron shell, and no window ever appears. So `looksLikeDshWeb()` judging the desktop case un-replayable is correct; what changed in 1.1.9 is that there is a way to restart **without** replaying, not that the judgement was loosened.
+
 **And one step has to stay asynchronous.** If `gracefulExit` resolves at once, the watchdog reads that as "the handover finished" and stands down (`graceful exit settled; the watchdog stands down`), leaving the process in place — which is precisely how this route used to report success and close nothing. So the desktop branch's promise does not resolve until the process is really gone, and the watchdog's forced exit stays armed. The "could not kill it" case follows the same rule: it stays pending and lets the watchdog escalate.
 
 | Feature | Under the desktop app |
 |---|---|
-| Shutdown | **Works**: IPC stop → read-only probe → terminate the main process (above). If any step fails, the watchdog forces the exit after 5 s |
-| Restart | **Not available, by design.** A restart replays the launch command line, and the desktop app was not started as `dsh web`; `relaunchPlan` answers `unsupported-host`, and the card says so instead of pretending |
+| Shutdown | **Works**: read-only probe → terminate the main process (above). If any step fails, the watchdog forces the exit after 5 s |
+| Restart | **Works** since 1.1.9: the same helper kills the main process, kills the host, waits for the single-instance lock to be released, and starts the executable again. It no longer replays the command line, and no longer answers `unsupported-host` |
 | Launch-mode switch | **Refused**, explicitly. The desktop app *is* an app window, so there is no tab form to switch to; the plugin answers `refused` with its reason and changes nothing |
 | `delayMs` / `exitCode` | Nobody reads them. The desktop app's exit is managed by its Electron main process; these two values only mean something for a DSH started from a terminal, a script or a service manager |
 | `hard` | The forced path: skip the graceful exit and go straight to the terminator |
@@ -254,14 +278,14 @@ What was measured on one machine, repeatedly:
 Installing into the desktop profile:
 
 ```powershell
-dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.8
+dsh plugin --profile desktop add github:SanYe-SanJiu/dsh-power-switch#v1.1.9
 ```
 
 Restart the desktop app afterwards. To check the install landed, look for `dsh-power-switch` in `dsh.profile.bundles` of `%USERPROFILE%\.dsh\profiles\desktop\package.json`.
 
 **Upgrading**: without the `#vX.Y.Z` suffix pnpm caches by branch ref, so repeating `add` can leave you on the old build. Pin the tag, or run `dsh plugin --profile desktop remove dsh-power-switch` and install again.
 
-In one sentence: the desktop window already has its own close button, so what this plugin is for there is **getting the shutdown right** (actually ending the process, and offering cancel / restart / confirm properly). For a DSH started from a terminal or a script it also adds the pre-exit wait and the exit code; under the desktop app, "restart" says plainly that it cannot.
+In one sentence: the desktop window already has its own close button, so what this plugin is for there is **getting shutdown and restart right** (actually ending the process, actually replacing it, and offering cancel / restart / confirm properly) — without ever flashing a command window. For a DSH started from a terminal or a script it also adds the pre-exit wait and the exit code.
 
 ## State and logs
 

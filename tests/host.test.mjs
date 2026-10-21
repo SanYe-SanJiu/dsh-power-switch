@@ -42,8 +42,11 @@ import {
   shouldOpenStartupWindow,
   resolveConfig,
   createSettingsHandler,
+  createDialogReportHandler,
   parseSettingsPatch,
   desktopTerminateScript,
+  desktopRestartScript,
+  desktopRestartVbs,
   parseDesktopTerminateResult,
 } from '../src/host.js'
 
@@ -98,7 +101,7 @@ const TRUSTED = { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' }
  * @param options - request shape and the plugin configuration in force.
  * @returns the response double, the recorded exits, the order log, and notes.
  */
-async function drive({ config = {}, request = {}, wait = false } = {}) {
+async function drive({ config = {}, request = {}, wait = false, mustTerminateHost = false } = {}) {
   const exits = []
   const order = []
   const notes = []
@@ -112,6 +115,7 @@ async function drive({ config = {}, request = {}, wait = false } = {}) {
     // watchdog is exercised rather than stood down.
     flushMs: 1,
     watchdogMs: 5,
+    mustTerminateHost,
     gracefulExit: () => { gracefulCalls += 1; order.push('graceful'); return new Promise(() => {}) },
     forceExit: (code) => { order.push('forced'); exits.push(code); done() },
     note: (message) => { notes.push(message) },
@@ -158,8 +162,18 @@ describe('isTrustedRequest', () => {
     }
   })
 
-  it('refuses a missing Origin, because no browser gesture posts without one', () => {
-    assert.equal(isTrustedRequest(makeRequest({ headers: { host: '127.0.0.1:3080' } })), false)
+  // The desktop app proxies /api/* from `dsh-app://app` and DELETES the Origin
+  // before forwarding, so refusing a missing Origin refused every control
+  // request it sent -- a click that did nothing, answered 403, with no log line
+  // to say why. A missing header is also not producible by a hostile page: a
+  // browser attaches Origin to every cross-origin POST and cannot suppress it,
+  // so the cross-site attack is still caught by the comparison below.
+  it('accepts a missing Origin, which is the shape the desktop app forwards', () => {
+    assert.equal(isTrustedRequest(makeRequest({ headers: { host: '127.0.0.1:3080' } })), true)
+  })
+
+  it('still refuses a missing Host, because then there is nothing to check', () => {
+    assert.equal(isTrustedRequest(makeRequest({ headers: {} })), false)
   })
 
   it('refuses a cross-origin page that can still reach loopback', () => {
@@ -491,6 +505,28 @@ describe('createPowerHandler', () => {
     assert.equal(driven.gracefulCalls(), 0)
   })
 
+  // The desktop app reports this: "closing killed the child background
+  // processes, but not the main one". `hard` used to call `forceExit` directly,
+  // and on a host this plugin must terminate, `process.exit` ends only the child
+  // -- the Electron main process keeps the window open. So a hard stop has to
+  // keep using the graceful route there, which is the one that ends the app.
+  it('still uses the terminating route for a hard stop when the host must be ended', async () => {
+    const driven = await drive({
+      request: { body: '{"hard":true}' },
+      wait: true,
+      mustTerminateHost: true,
+    })
+    assert.equal(driven.response.state.status, 200)
+    // Graceful first (it is what kills the app), then the watchdog's forced
+    // exit as the backstop. Never "forced" alone, which is what left the app up.
+    assert.deepEqual(driven.order, ['answered', 'graceful', 'forced'])
+    assert.equal(driven.gracefulCalls(), 1)
+    // And the log says which route was taken, because the two look identical
+    // from the button and this is the difference that was invisible for two
+    // releases.
+    assert.match(driven.notes.join('\n'), /terminate-host=yes/u)
+  })
+
   it('routes the loader-row configuration into the answer', async () => {
     const driven = await drive({ config: { delayMs: 250, exitCode: 3 }, wait: true })
     const payload = driven.response.json()
@@ -532,9 +568,11 @@ describe('createPowerHandler', () => {
   it('never exits for a refused request', async () => {
     for (const request of [
       { method: 'GET' },
-      { headers: { host: '127.0.0.1:3080' } },
       { remoteAddress: '10.1.2.3' },
       { headers: { ...TRUSTED, 'x-forwarded-for': '10.1.2.3' } },
+      // A missing Host is still a refusal: with nothing to compare an Origin
+      // against, "cannot be checked" must not be read as "ours".
+      { headers: {} },
     ]) {
       const { exits } = await drive({ request })
       // Give any wrongly-armed escalation a chance to fire before asserting.
@@ -912,6 +950,53 @@ describe('createSettingsHandler', () => {
   })
 })
 
+describe('createDialogReportHandler', () => {
+  const drive = async ({ method = 'POST', headers = TRUSTED, body = '{}' } = {}) => {
+    const notes = []
+    const handler = createDialogReportHandler({ note: (line) => { notes.push(line) } })
+    const response = makeResponse()
+    await handler(makeRequest({ method, url: '/api/dsh-power-switch/dialog', headers, body }), response)
+    return { response, notes }
+  }
+
+  it('records which dialog was drawn and what covers each answer', async () => {
+    const { response, notes } = await drive({
+      body: JSON.stringify({
+        kind: 'host',
+        viewport: '1280x800@1',
+        centre: 'itself',
+        confirmHit: 'itself',
+        restartHit: '<div class="something">',
+        cancelHit: 'missing',
+      }),
+    })
+    assert.equal(response.state.status, 200)
+    assert.equal(response.json().ok, true)
+    assert.equal(notes.length, 1)
+    // The one fact a screenshot cannot supply: the named element on top of a
+    // button. This is what tells "overlapped" apart from "trapped in an ancestor".
+    assert.match(notes[0], /host dialog/u)
+    assert.match(notes[0], /viewport 1280x800@1/u)
+    assert.match(notes[0], /restart is <div class="something">/u)
+    assert.match(notes[0], /cancel is missing/u)
+  })
+
+  it('calls an unknown dialog kind the host one, and tolerates a body it cannot read', async () => {
+    const { notes } = await drive({ body: JSON.stringify({ kind: 'nonsense' }) })
+    assert.match(notes[0], /host dialog/u)
+    // An unreadable body is not a reason to lose the report: the only thing the
+    // handler does with it is name the dialog, and the default name is safe.
+    const bare = await drive({ body: 'not json' })
+    assert.equal(bare.response.state.status, 200)
+    assert.match(bare.notes[0], /host dialog/u)
+  })
+
+  it('refuses an untrusted request and a wrong method', async () => {
+    assert.equal((await drive({ headers: { ...TRUSTED, origin: 'http://evil.example' }, body: '{}' })).response.state.status, 403)
+    assert.equal((await drive({ method: 'GET' })).response.state.status, 405)
+  })
+})
+
 describe('createRestartHandler', () => {
   /** Drive the restart route once, with the real exit responder shortened. */
   async function drive2({
@@ -981,6 +1066,24 @@ describe('createRestartHandler', () => {
     })
     assert.equal(response.json().delayMs, 250)
     assert.deepEqual(exits, [3])
+  })
+
+  it('leaves the exit to a helper that will end this process itself', async () => {
+    // The desktop helper kills the Electron main process and then this host. If
+    // the host also ran its own exit path, two terminators would race for the
+    // same two pids and could take the host down before its answer reached the
+    // page -- the page would then never learn that the restart was accepted.
+    const { response, exits, order, persisted } = await drive2({
+      respawn: () => ({ pid: 777, selfExiting: true }),
+      request: { body: '{"launchMode":"app"}' },
+    })
+    assert.equal(response.state.status, 200)
+    assert.equal(response.json().ok, true)
+    assert.equal(response.json().helperPid, 777)
+    assert.deepEqual(persisted.slice(0, 1), ['app'])
+    // Answered, and nothing else: no graceful call, no forced exit.
+    assert.deepEqual(order, ['answered'])
+    assert.deepEqual(exits, [])
   })
 
   it('falls back to the stored mode when the body names none', async () => {
@@ -1454,5 +1557,76 @@ describe('terminating the desktop app', () => {
     // partial object cannot be read as success.
     const parsed = parseDesktopTerminateResult('{"found":true,"killed":"yes","name":5}')
     assert.deepEqual(parsed, { found: true, killed: false, name: null, error: null })
+  })
+})
+
+describe('restarting the desktop app', () => {
+  it('starts the helper through wscript, and never through a console host', () => {
+    // The window was the whole problem. A launcher that starts powershell gets a
+    // console of its own from WMI, and `-WindowStyle Hidden` only hides one that
+    // already exists -- it still flashes and still costs a taskbar entry. wscript
+    // is a GUI-subsystem program, so there is no console to hide in the first
+    // place. Asserting on the absence of `-WindowStyle` is asserting that the old
+    // workaround did not come back.
+    const script = desktopRestartScript({ vbsPath: 'C:\\helpers\\restart-helper.vbs', logPath: 'C:\\helpers\\helper.log' })
+    assert.ok(script.includes("$vbs = 'C:\\helpers\\restart-helper.vbs'"), script)
+    assert.ok(script.includes('Invoke-CimMethod -ClassName Win32_Process -MethodName Create'), script)
+    assert.ok(script.includes(`$cmd = 'wscript.exe //B //Nologo "{0}"' -f $vbs`), script)
+    assert.ok(!script.includes('-WindowStyle'), 'the console is never created, so it is never hidden')
+    assert.ok(!script.includes('powershell.exe'), 'the helper is not a powershell worker any more')
+    assert.ok(script.includes('cscript.exe //B //Nologo $vbs'), 'a refused WMI call still runs the script')
+    assert.ok(!script.includes(';'), 'no statement joins')
+  })
+
+  it('kills the main process before the host, and starts the executable last', () => {
+    // The order is the design: the main process owns the window, the host is a
+    // fork child that outlives its parent as an orphan holding the port, and the
+    // executable may only be started once Electron has released its
+    // single-instance lock.
+    const script = desktopRestartVbs({ mainPid: 111, hostPid: 222, exePath: 'C:\\App\\a.exe', logPath: '' })
+    const main = script.indexOf('KillPid MAIN_PID')
+    const host = script.indexOf('KillPid HOST_PID')
+    const start = script.indexOf('shell.Run')
+    assert.ok(main > 0 && host > main, 'the main process goes first')
+    assert.ok(start > host, 'the executable is started after both kills')
+  })
+
+  it('polls for a dead process instead of sleeping a fixed budget', () => {
+    // The first version slept 1200 ms and then 2500 ms flat, so a restart took
+    // about four and a half seconds even though the app was gone in hundreds of
+    // milliseconds. Both waits are now observable, so they are observed.
+    const script = desktopRestartVbs({ mainPid: 111, hostPid: 222, exePath: 'C:\\App\\a.exe', logPath: '' })
+    assert.ok(script.includes('Do While waited < 3000'), 'the wait has a bound')
+    assert.equal(script.split('WaitGone ').length - 1, 2, 'one wait per process')
+    assert.ok(script.includes('WScript.Sleep 50'), 'the poll interval is short')
+    assert.ok(!script.includes('Sleep 1200'), 'the flat wait is gone')
+    assert.ok(!script.includes('Sleep 2500'), 'and so is the second one')
+  })
+
+  it('writes the pids as bare numbers', () => {
+    const script = desktopRestartVbs({ mainPid: 111, hostPid: 222, exePath: 'C:\\App\\a.exe', logPath: '' })
+    assert.ok(script.includes('MAIN_PID = 111'), 'the main pid travels as data')
+    assert.ok(script.includes('HOST_PID = 222'), 'and so does the host pid')
+  })
+
+  it('writes paths as string literals without breaking the line structure', () => {
+    // A path cannot contain a newline, and a VBScript literal cannot contain one
+    // either, so a newline is stripped rather than escaped. A doubled quote is the
+    // only escape the language has.
+    const script = desktopRestartVbs({ mainPid: 1, hostPid: 2, exePath: 'C:\\App\\a.exe', logPath: 'C:\\a.log' })
+    assert.ok(script.includes('EXE_PATH = "C:\\App\\a.exe"'), script)
+    const broken = desktopRestartVbs({ mainPid: 1, hostPid: 2, exePath: 'C:\\a\r\nMsgBox "hi"', logPath: '' })
+    assert.ok(broken.includes('EXE_PATH = "C:\\aMsgBox ""hi"""'), broken)
+  })
+
+  it('never interpolates a pid that could break out of the script', () => {
+    const script = desktopRestartVbs({ mainPid: '; Remove-Item C:\\', hostPid: Number.NaN })
+    assert.ok(script.includes('MAIN_PID = 0'), script)
+    assert.ok(script.includes('HOST_PID = 0'), script)
+  })
+
+  it('starts the app with a visible window, because that window is the app', () => {
+    const script = desktopRestartVbs({ mainPid: 111, hostPid: 222, exePath: 'C:\\App\\a.exe', logPath: '' })
+    assert.ok(script.includes('shell.Run """" & EXE_PATH & """", 1, False'), 'window state 1 shows the app')
   })
 })

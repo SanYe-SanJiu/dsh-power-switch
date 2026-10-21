@@ -18,6 +18,25 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const React = require('react')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    /**
+     * `react-dom`'s portal, when this host exposes it.
+     *
+     * Optional on purpose, and read once. A portal is what makes the self-drawn
+     * dialog immune to the layout of its ancestors: a `position: relative` or a
+     * `transform` anywhere above a `position: fixed` box silently turns that box
+     * into a child of the ancestor instead of the viewport, which is a dialog
+     * that looks right and answers no clicks. `react-dom` is a platform seed
+     * word, so the real renderer has it; the test harness does not, and the
+     * in-place box is the fallback there. A `require` that throws must not take
+     * the whole plugin down with it.
+     */
+    let createPortal = null
+    try {
+      const reactDom = require('react-dom')
+      if (typeof reactDom?.createPortal === 'function') createPortal = reactDom.createPortal
+    } catch {
+      createPortal = null
+    }
 
     const h = React.createElement
     const NS = 'dsh-power-switch'
@@ -28,6 +47,16 @@ window.__ModuleLoader__.load({
     // DSH 0.1.7 has no writable plugin settings surface for a plugin with no
     // declared schema, so the card writes the advanced settings itself.
     const SETTINGS_ROUTE = '/api/dsh-power-switch/settings'
+    /**
+     * Where the card reports which dialog it drew, and what is painted on top of
+     * the answers.
+     *
+     * "Visible but unclickable" has two causes that look the same in a
+     * screenshot: a host dialog something overlaps, and this plugin's own dialog
+     * trapped in a positioned ancestor. A page cannot write to the host's log, so
+     * it says it here and the answer lands next to the exit decisions.
+     */
+    const DIALOG_ROUTE = '/api/dsh-power-switch/dialog'
     /** How long the card keeps checking that the process really went down. */
     const REVIVE_WINDOW_MS = 15_000
     /** Pause between liveness probes. */
@@ -88,8 +117,10 @@ window.__ModuleLoader__.load({
       zh: {
         title: 'DSH 电源按钮',
         summary: 'dsh-power-switch — 侧边栏一键关闭 DSH 进程，或在「应用窗口 / 普通标签页」之间切换下次启动方式。',
-        dangerTitle: '关闭 DSH 进程',
         dangerHint: '关闭后本页会失效，需要重新启动 DSH 才能继续用。进行中的回合、后台任务与终端会话都会被中止。',
+        // `action` is the button label and is the only place this sentence
+        // appears: the status span beside the button used to repeat it while idle,
+        // so the card read "关闭 DSH 进程 关闭 DSH 进程" on one line.',
         action: '关闭 DSH 进程',
         working: '正在关闭…',
         done: '已发出关闭请求，进程正在退出。',
@@ -110,7 +141,7 @@ window.__ModuleLoader__.load({
         launchSwitchToTab: '切换到「普通标签页」',
         launchSwitchHint: '一键完成：保存设置 → 改好桌面快捷方式 → 重启 DSH。',
         launchSwitching: '正在切换…',
-        launchRestarting: '正在重启，新窗口马上打开…',
+        launchRestarting: '正在重启，新窗口马上打开',
         launchNoAnswer: '宿主 10 秒内没有回应：设置可能已保存，但重启不确定，可以再点一次。',
         launchStillHere: '本页仍在：新窗口可能开在别处了，可以按 Ctrl+W 关掉本页。',
         launchUnavailable: '读取宿主设置失败：',
@@ -139,7 +170,7 @@ window.__ModuleLoader__.load({
         shortcutFailed: '桌面快捷方式未能自动处理：',
         failed: '关闭请求失败',
         cornerAction: '关闭或重启 DSH',
-        cornerClosing: '正在关闭 DSH…',
+        cornerClosing: '正在关闭 DSH，请稍候',
         cornerStillHere: '已请求关闭；本页可以按 Ctrl+W 关掉。',
         cancel: '取消',
         confirm: '确认关闭',
@@ -153,7 +184,6 @@ window.__ModuleLoader__.load({
       en: {
         title: 'DSH power button',
         summary: 'dsh-power-switch \u2014 shut this DSH down from the sidebar, or switch how the next launch opens (app window / normal tab).',
-        dangerTitle: 'Shut down DSH',
         dangerHint: 'After this the page stops working until DSH starts again. Turns in flight, background jobs and terminal sessions are aborted.',
         action: 'Shut down DSH',
         working: 'Shutting down\u2026',
@@ -175,7 +205,7 @@ window.__ModuleLoader__.load({
         launchSwitchToTab: 'Switch to normal tab',
         launchSwitchHint: 'One click does it: save the setting, fix the desktop shortcut, restart DSH.',
         launchSwitching: 'Switching\u2026',
-        launchRestarting: 'restarting; the new window opens shortly\u2026',
+        launchRestarting: 'restarting; the new window opens shortly',
         launchNoAnswer: 'the host did not answer within 10 seconds: the setting may be saved but the restart is unconfirmed. Try again.',
         launchStillHere: 'this page is still here \u2014 the new window probably opened elsewhere. Press Ctrl+W to close it.',
         launchUnavailable: 'Could not read the host settings: ',
@@ -204,7 +234,7 @@ window.__ModuleLoader__.load({
         shortcutFailed: 'the desktop shortcut could not be handled: ',
         failed: 'Shutdown request failed',
         cornerAction: 'Shut down or restart DSH',
-        cornerClosing: 'shutting DSH down\u2026',
+        cornerClosing: 'shutting DSH down, please wait',
         cornerStillHere: 'shutdown requested; press Ctrl+W to close this page.',
         cancel: 'Cancel',
         confirm: 'Shut down',
@@ -266,6 +296,72 @@ window.__ModuleLoader__.load({
       const relative = String(route).replace(/^\/+/u, '')
       if (typeof document === 'undefined' || !document.baseURI) return `/${relative}`
       return new URL(relative, document.baseURI).pathname
+    }
+
+    /**
+     * Report which confirmation dialog was drawn, and what the page says is on
+     * top of each answer.
+     *
+     * `elementFromPoint` is the whole point. A dialog can be fully styled,
+     * correctly positioned and still unclickable because something is painted
+     * over it -- and the answer to "what is there" is the one fact neither the
+     * screenshot nor the source can supply. When the hit test returns the button
+     * itself, the dialog is reachable and the problem is elsewhere; when it
+     * returns some other element, that element is named.
+     *
+     * Silent on every failure: a diagnostic is never allowed to be the reason a
+     * dialog does not open.
+     * @param kind - `'host'` or `'fallback'`, the dialog that was mounted.
+     */
+    function reportDialog(kind) {
+      try {
+        if (typeof document === 'undefined' || typeof window === 'undefined') return
+        const describe = (element) => {
+          if (element === null || element === undefined) return 'nothing'
+          const tag = element.tagName === undefined ? '?' : element.tagName.toLowerCase()
+          const cls = typeof element.className === 'string' ? element.className.trim().slice(0, 60) : ''
+          return cls === '' ? `<${tag}>` : `<${tag} class="${cls}">`
+        }
+        /** What sits on top of the middle of one element. */
+        const over = (element) => {
+          if (element === null || element === undefined) return 'missing'
+          const rect = element.getBoundingClientRect()
+          if (rect.width === 0 || rect.height === 0) return 'a zero-sized box'
+          const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+          if (hit === null) return 'nothing'
+          if (hit === element || element.contains(hit)) return 'itself'
+          return describe(hit)
+        }
+        const report = {
+          kind,
+          viewport: `${String(window.innerWidth)}x${String(window.innerHeight)}@${String(window.devicePixelRatio)}`,
+          centre: describe(document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2)),
+        }
+        // Two sets of hooks, because the card and the sidebar label their
+        // buttons differently: the card's are `data-dsh-power-confirm`, the
+        // sidebar's are `data-dsh-power-side-confirm`. Checking only the first
+        // set reported "missing" for a dialog whose buttons were right there --
+        // a false alarm that costs a whole round trip to disprove.
+        for (const [key, hooks] of [
+          ['confirm', ['data-dsh-power-confirm', 'data-dsh-power-side-confirm']],
+          ['restart', ['data-dsh-power-restart', 'data-dsh-power-side-restart']],
+          ['cancel', ['data-dsh-power-cancel', 'data-dsh-power-side-cancel']],
+        ]) {
+          let found = null
+          for (const hook of hooks) {
+            found = document.querySelector(`[${hook}]`)
+            if (found !== null) break
+          }
+          report[`${key}Hit`] = over(found)
+        }
+        void fetch(absoluteUrl(DIALOG_ROUTE), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(report),
+        }).catch(() => {})
+      } catch {
+        // See above: diagnostics stay out of the way.
+      }
     }
 
     /** Design tokens, injected once as a plugin-owned stylesheet. */
@@ -467,6 +563,61 @@ window.__ModuleLoader__.load({
   overflow-wrap: anywhere;
 }
 .dpb-side-status[data-phase="failed"] { color: var(--dsw-alias-label-danger, #b91c1c); }
+/* The same message, once it has been moved out of the sidebar and onto the
+   document body.
+
+   The anchored bubble above is invisible in this position. The sidebar is a
+   scrolling column with its own clipping and its own stacking context, so a
+   popover that hangs off the bottom seat is clipped by the column rather than
+   painted over the page -- the restart button answered "cannot restart here"
+   and looked like it did nothing at all. Portalled to the body and fixed to the
+   middle of the viewport instead, so the message cannot be clipped by anything
+   and cannot be mistaken for decoration: an answer that was asked for arrives
+   where the eye already is.
+
+   Sized to its own text on purpose: width max-content with inset 0 and
+   margin auto centres the box AND makes the box exactly as wide as the
+   sentence, which is what stops a long refusal from being squeezed against a
+   declared width and losing its tail. No transform either: a transform is a
+   fine way to centre, but it also makes the element its own containing block
+   for anything inside it, and this box has already paid for that lesson once. */
+.dpb-side-toast {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: max-content;
+  height: max-content;
+  max-width: min(520px, calc(100vw - 48px));
+  z-index: 2147483000;
+  box-sizing: border-box;
+  padding: 14px 22px;
+  border-radius: 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
+  background: var(--dsw-alias-bg-l1, #ffffff);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+  /* The PRIMARY label colour, not the secondary one.
+     Secondary is the host's "supporting text" token, and a supporting-text token
+     is allowed to be a low-contrast grey: fine for a caption inside a card that
+     also has a heading, invisible for a box whose entire content is one line.
+     The dialog under this rule already uses primary, and that is the one whose
+     text has always been readable. */
+  color: var(--dsw-alias-label-primary, #111827);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.7;
+  text-align: center;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  /* The middle of the screen is where the eye already is -- and also where the
+     page is. Not being able to click through a message that is only telling you
+     something would be worse than the message not being seen at all. */
+  pointer-events: none;
+}
+.dpb-side-toast[data-dsh-power-side-status="failed"] {
+  color: var(--dsw-alias-label-danger, #b91c1c);
+}
 /* The confirmation dialog this plugin draws itself, used when the host's
    primitives module offers no usable Modal.
 
@@ -590,6 +741,73 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The sidebar's answer to an action.
+     *
+     * Portalled onto the body when this host exposes a portal, because the
+     * sidebar clips it: the anchored bubble hangs off the bottom seat, inside a
+     * scrolling column with its own stacking context, so it was painted nowhere.
+     * "Restart is unavailable here" arrived and was invisible, which reads as a
+     * dead button. Same `data-dsh-power-side-status` hook either way, so the
+     * shape of the message does not depend on where it is painted.
+     * @param text - the message.
+     * @param failed - whether it reports a refusal or failure.
+     * @returns the message node.
+     */
+    function sideStatus(text, failed) {
+      const state = failed ? 'failed' : 'ok'
+      if (typeof createPortal === 'function' && typeof document !== 'undefined' && document.body) {
+        return createPortal(h('div', {
+          className: 'dpb-side-toast',
+          role: 'status',
+          'data-dsh-power-side-status': state,
+          // Inline, not just the stylesheet rule. This box is the only thing
+          // this plugin paints outside the host's own layout containers, and it
+          // came up as an empty white box once already: the text was there and
+          // a theme token made it invisible. Inline declarations cannot be
+          // out-ranked by a host rule, and literal colours cannot be redefined
+          // by a theme that this element does not belong to.
+          style: {
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            margin: 'auto',
+            // `max-content` so the box is exactly as wide as the sentence, with a
+            // floor and a ceiling: a floor because a max-content box that resolves
+            // to nothing is an empty-looking bubble, and a ceiling so a long
+            // refusal wraps instead of running off the screen.
+            width: 'max-content',
+            minWidth: '180px',
+            height: 'max-content',
+            maxWidth: 'min(520px, calc(100vw - 48px))',
+            zIndex: 2147483000,
+            boxSizing: 'border-box',
+            padding: '14px 22px',
+            borderRadius: '10px',
+            border: '1px solid rgba(0, 0, 0, 0.12)',
+            background: '#ffffff',
+            boxShadow: '0 12px 40px rgba(0, 0, 0, 0.22)',
+            color: failed ? '#b91c1c' : '#111827',
+            fontFamily: 'inherit',
+            fontSize: '13px',
+            fontWeight: 500,
+            lineHeight: 1.7,
+            textAlign: 'center',
+            whiteSpace: 'normal',
+            overflow: 'visible',
+            overflowWrap: 'anywhere',
+            pointerEvents: 'none',
+          },
+        }, text ?? ''), document.body)
+      }
+      return h('div', {
+        className: 'dpb-side-status',
+        'data-dsh-power-side-status': state,
+      }, text)
+    }
+
+    /**
      * The confirmation dialog this plugin draws itself.
      *
      * Used whenever `hasModal()` is false -- i.e. on any host whose primitives
@@ -604,15 +822,23 @@ window.__ModuleLoader__.load({
      * no matter which dialog drew it. `data-dsh-power-dialog="fallback"` is the
      * marker that says which one this is.
      *
-     * Drawn in place, as a plain fixed-position subtree. That works ONLY because
-     * the caller keeps it outside `.dpb-side`, which is the element that used to
-     * carry `position: relative`: a positioned ancestor silently becomes the
-     * containing block for every fixed descendant, so the backdrop resolved
-     * `inset: 0` against a 36px sidebar button instead of the viewport. It looked
-     * roughly centred and swallowed no clicks. There is no portal and no second
-     * React root here, because neither is needed once the ancestor chain is
-     * clean -- and `react-dom/client` is not a platform seed word, so a portal
-     * would have to be hand-rolled anyway.
+     * Drawn as a fixed-position subtree, and portalled onto `document.body`
+     * whenever this host exposes `react-dom`'s `createPortal`.
+     *
+     * The portal is the point, not a nicety. A `position: relative` (or a
+     * `transform`, or `contain`) anywhere up the tree silently becomes the
+     * containing block for every fixed descendant, so the backdrop resolves
+     * `inset: 0` against a 36px sidebar button instead of the viewport: a dialog
+     * that looks roughly centred and answers no clicks. The caller already keeps
+     * this outside `.dpb-side` for that reason; the portal makes it true no
+     * matter what the host's own layout does above the seat this button
+     * occupies. Without `react-dom` (the test harness) it stays in place.
+     *
+     * This dialog is only reached when the host has no usable `Modal`, so on a
+     * host whose primitives table carries one the dialog actually seen is the
+     * host's. Which of the two was drawn is what the card reports to
+     * `DIALOG_ROUTE`; that report exists because the two are indistinguishable
+     * in a screenshot and have completely different causes.
      * @param props - the three answers plus their copy and the hook names.
      * @returns the dialog, or null when it is closed.
      */
@@ -659,6 +885,12 @@ window.__ModuleLoader__.load({
           ),
         ),
       )
+      // Straight onto the document body when a portal is available. The box is
+      // `position: fixed` and asks for the viewport, and no ancestor can take
+      // that away from it once it is not a descendant of one.
+      if (typeof createPortal === 'function' && typeof document !== 'undefined' && document.body) {
+        return createPortal(dialog, document.body)
+      }
       return dialog
     }
 
@@ -881,6 +1113,14 @@ window.__ModuleLoader__.load({
       const [phase, setPhase] = React.useState('idle')
       const [message, setMessage] = React.useState(null)
       const [pid, setPid] = React.useState(null)
+      // Say which dialog was drawn, and whether anything is painted over its
+      // answers. Deferred, because the host's Modal portals itself on its own
+      // schedule and an immediate hit test would measure a page it is not on yet.
+      React.useEffect(() => {
+        if (confirming !== true) return undefined
+        const timer = setTimeout(() => { reportDialog(hasModal() ? 'host' : 'fallback') }, 400)
+        return () => { clearTimeout(timer) }
+      }, [confirming])
       /** Which close strategy already drove an attempt, so it runs once. */
       const [autoCloseRan, setAutoCloseRan] = React.useState(false)
       /** The launch mode the NEXT launch should use, as the host reports it. */
@@ -1366,8 +1606,7 @@ window.__ModuleLoader__.load({
               setConfirming(true)
             },
           }, phase === 'working' ? t('working') : t('action')),
-          h('span', { className: 'dpb-status', 'data-phase': phase },
-            message ?? (phase === 'idle' ? t('dangerTitle') : '')),
+          h('span', { className: 'dpb-status', 'data-phase': phase }, message ?? ''),
         ),
         // Only a POPUP earns the close button. An app window is already closing
         // itself, and a plain tab would swallow the click silently.
@@ -1580,6 +1819,50 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false)
       const [status, setStatus] = React.useState(null)
       const [failed, setFailed] = React.useState(false)
+      // The same report the card makes: this is the entry point most people
+      // reach, so it has to be able to answer "is anything over the buttons".
+      React.useEffect(() => {
+        if (confirming !== true) return undefined
+        const timer = setTimeout(() => { reportDialog(hasModal() ? 'host' : 'fallback') }, 400)
+        return () => { clearTimeout(timer) }
+      }, [confirming])
+      /**
+       * A message on the screen's middle is a message that has to leave again.
+       *
+       * Two ways out, because either one alone strands someone: a timer, so a
+       * refusal does not sit there forever, and a click anywhere, because the
+       * person who read it should not have to wait out the timer. The timer's
+       * length is the point where the copy is readable twice without the box
+       * becoming furniture.
+       *
+       * "Shutting down" gets the shorter one. It is not a report to read, it is
+       * an acknowledgement that the request landed, and the process normally
+       * disappears within a second of it -- a box that outlives the thing it
+       * announces is what makes people ask whether it is an error. If the
+       * process turns out to still be there, the watch puts up its own message
+       * and that one gets the full six seconds.
+       */
+      React.useEffect(() => {
+        if (status === null) return undefined
+        const clear = () => { setStatus(null) }
+        const timer = setTimeout(clear, status === t('cornerClosing') ? 3000 : 6000)
+        // Capture, so a handler deeper in the page that stops propagation cannot
+        // keep the message alive. The click that asked for this message has
+        // already been delivered by the time this effect runs.
+        if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+          document.addEventListener('pointerdown', clear, true)
+        }
+        return () => {
+          clearTimeout(timer)
+          if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+            document.removeEventListener('pointerdown', clear, true)
+          }
+        }
+        // `t` is rebuilt on every render by design (it closes over the props that
+        // supply one key at a time), so it must not be a dependency here: that
+        // would restart the timer on every render and the message would stick.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [status])
       /**
        * The watch's next poll, so unmounting cancels the chain.
        *
@@ -1698,10 +1981,7 @@ window.__ModuleLoader__.load({
           'data-dsh-power-side': 'shutdown',
         },
           h('div', { className: 'dpb-side-anchor' },
-            status === null ? null : h('div', {
-              className: 'dpb-side-status',
-              'data-dsh-power-side-status': failed ? 'failed' : 'ok',
-            }, status),
+            status === null ? null : sideStatus(status, failed),
             h('button', {
               type: 'button',
               className: 'dpb-side-button',

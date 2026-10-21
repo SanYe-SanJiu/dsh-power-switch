@@ -77,9 +77,34 @@ export function isTrustedReadRequest(request) {
  * Whether a process-control request came from this Web host on loopback.
  *
  * Same fence the market's restart route uses: a loopback peer, no forwarding
- * trace, and an `Origin` that matches the `Host` the browser reached us on.
- * A missing Origin is a refusal here — unlike a read, every browser sends one on
- * a same-origin POST, so its absence means a script rather than a person.
+ * trace, and — when the caller sends an `Origin` — one that matches the `Host`
+ * the browser reached us on.
+ *
+ * ## Why a missing Origin is allowed here
+ *
+ * This used to refuse outright, reasoning that every browser sends an `Origin`
+ * on a same-origin POST, so its absence means a script rather than a person.
+ * The first half of that is true and the conclusion does not follow: the desktop
+ * app proxies `/api/*` from its own `dsh-app://app` origin to this host, and it
+ * DELETES the `Origin` header before forwarding (its protocol handler has
+ * already checked that the caller was `dsh-app://app`), replacing the cookie
+ * with the launch token it minted. So every control request from the desktop app
+ * arrived with no `Origin` and was answered `403 untrusted request` — from the
+ * button's side, a click that did nothing, and a 403 that writes no log line.
+ * That is the bug this paragraph exists because of.
+ *
+ * The fence is not weakened by allowing an absent `Origin`, because a MISSING
+ * header is not something a hostile page can produce: a browser attaches
+ * `Origin` to every cross-origin `POST` and the page cannot suppress or forge
+ * it, so a cross-site request is still caught by the comparison below. What
+ * remains reachable without an `Origin` is a local process, which can already
+ * set or omit any header and reach loopback with no header at all — `Origin`
+ * never fenced that off. A local process is answered by the same boundary that
+ * always answered it: this route only ever runs on a loopback socket, and it can
+ * only end a process on the machine that already runs it.
+ *
+ * This matches the reasoning already written for {@link isTrustedReadRequest},
+ * which has allowed an absent `Origin` since it was first written.
  * @param request - the incoming request.
  * @returns true when the request is the person's own browser on this machine.
  */
@@ -91,7 +116,11 @@ export function isTrustedRequest(request) {
   }
   const origin = request.headers.origin
   const host = request.headers.host
-  if (origin === undefined || host === undefined) return false
+  // Still refused for an absent Origin: without a Host there is nothing an
+  // Origin could have been checked against, and "cannot be checked" is not
+  // the same as "ours".
+  if (host === undefined) return false
+  if (origin === undefined) return true
   return sameAuthority(origin, host)
 }
 
@@ -242,6 +271,24 @@ export function createExitPlan(options, flushMs = RESPONSE_FLUSH_MS, watchdogMs 
  *
  * Two modes, one exit: the launch mode decides what happens AFTER the process
  * is gone (the helper reopens a tab or an app window), never whether it goes.
+ *
+ * ## `hard` cannot skip the exit on the desktop app
+ *
+ * `hard` means "skip graceful disposal and go now", and it used to do that by
+ * calling `forceExit` directly whenever `gracefulAtMs` was null. On a plain
+ * `dsh web` host that is correct: `process.exit` IS the exit, because nothing
+ * else owns the process. The desktop app is different — this host is a CHILD of
+ * the Electron main process, which stays alive and keeps the window open when
+ * the child disappears, so `process.exit` alone ends the host and nothing else.
+ * That is the reported symptom: "the child background processes died, the main
+ * one did not".
+ *
+ * `mustTerminateHost: true` is the desktop app saying so. The graceful route
+ * there is not "dispose and return" but "ask the parent to stop, then end the
+ * parent process", and it is the only route that ends the app. So the hard stop
+ * keeps its meaning (no graceful disposal, no waiting) while still using that
+ * route: `gracefulAtMs` is treated as 0 rather than null, which starts it at
+ * once and leaves the watchdog behind it as before.
  * @param deps - the two exit routes, a diagnostics sink, and the two timings.
  * @returns a function that answers, then leaves. It returns a promise that
  *   settles once the exit has been handed over (the watchdog stood down, or it
@@ -255,6 +302,7 @@ export function createExitResponder(deps) {
     note,
     flushMs = RESPONSE_FLUSH_MS,
     watchdogMs = EXIT_WATCHDOG_MS,
+    mustTerminateHost = false,
   } = deps
   let scheduled = false
   return (response, status, payload, options) => {
@@ -262,11 +310,17 @@ export function createExitResponder(deps) {
     if (scheduled) return Promise.resolve('already-scheduled')
     scheduled = true
     const plan = createExitPlan(options, flushMs, watchdogMs)
+    // On a host this plugin must terminate (the desktop app), a hard stop keeps
+    // its "no waiting" meaning but cannot skip the graceful route: that route is
+    // the only thing that ends the app, since `process.exit` here only ends the
+    // child. `gracefulAtMs` null becomes 0, so it starts immediately.
+    const terminateHost = mustTerminateHost === true
+    const gracefulAtMs = plan.gracefulAtMs === null && terminateHost ? 0 : plan.gracefulAtMs
     // Tell the operator what was decided BEFORE anything irreversible, so the
     // relaunch helper's log records why the death happened.
-    note?.(`exit requested: code=${String(options.code)} hard=${String(plan.hard)} delay=${String(plan.delayMs)}ms gracefulAt=${String(plan.gracefulAtMs)}ms forceAt=${String(plan.forceAtMs)}ms graceful=${typeof gracefulExit === 'function' ? 'yes' : 'no'}`)
+    note?.(`exit requested: code=${String(options.code)} hard=${String(plan.hard)} delay=${String(plan.delayMs)}ms gracefulAt=${String(gracefulAtMs)}ms forceAt=${String(plan.forceAtMs)}ms graceful=${typeof gracefulExit === 'function' ? 'yes' : 'no'}${terminateHost ? ' terminate-host=yes' : ''}`)
 
-    if (plan.gracefulAtMs === null) {
+    if (gracefulAtMs === null) {
       // Nothing to wait for: the hard stop IS the exit, forced immediately
       // rather than after a window that no longer means anything.
       note?.('hard stop: skipping graceful disposal and ending the process now')
@@ -292,7 +346,7 @@ export function createExitResponder(deps) {
             return 'failed'
           })
         void armWatchdog(graceful, options.code, plan, forceExit, note).then(resolve)
-      }, plan.gracefulAtMs)
+      }, gracefulAtMs)
     })
   }
 }
@@ -475,6 +529,25 @@ export function createRestartHandler(deps) {
         launchMode: mode,
         reason: problem?.reason ?? 'helper-unavailable',
         error: problem?.message ?? 'the relaunch helper could not be started, so nothing would bring the service back',
+      })
+      return
+    }
+    // A helper that ends this host itself answers here, and the host does NOT
+    // schedule its own exit.
+    //
+    // On the desktop app the helper has to kill the Electron main process and
+    // then this host, because the host is a fork child that outlives its parent
+    // as an orphan holding the port. If the host also ran the normal exit path,
+    // two terminators would race for the same two pids: harmless in the end, but
+    // it makes every log line ambiguous about which of them actually did it, and
+    // it can kill the host before its own answer reaches the page.
+    if (started.selfExiting === true) {
+      sendJson(response, 200, {
+        ok: true,
+        restarting: true,
+        launchMode: mode,
+        persisted,
+        helperPid: pid,
       })
       return
     }
@@ -985,6 +1058,61 @@ export const RESTART_ROUTE = '/api/dsh-power-switch/restart'
 export const SETTINGS_ROUTE = '/api/dsh-power-switch/settings'
 
 /**
+ * Route the card reports which confirmation dialog it drew, and what the page
+ * says is on top of the answers.
+ *
+ * This exists because "the dialog is visible but nothing happens when I click"
+ * has two very different causes that look identical from a screenshot: a host
+ * dialog that some other element overlaps, and this plugin's own dialog trapped
+ * in a positioned ancestor. The card cannot tell which without asking the
+ * document, and a page has no way to write a log. So it reports here, and the
+ * answer lands in the plugin's log next to everything else.
+ *
+ * It is a diagnostic, not a control channel: it changes nothing and is safe to
+ * call on every open.
+ */
+export const DIALOG_ROUTE = '/api/dsh-power-switch/dialog'
+
+/**
+ * Build the dialog-report route handler.
+ * @param deps - `{ note }`, the shared diagnostic sink.
+ * @returns a `webServer` route handler.
+ */
+export function createDialogReportHandler(deps) {
+  const { note } = deps
+  return async (request, response) => {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { ok: false, error: 'POST only' })
+      return
+    }
+    if (!isTrustedRequest(request)) {
+      sendJson(response, 403, { ok: false, error: 'untrusted request' })
+      return
+    }
+    let body = null
+    try {
+      body = await readJsonBody(request)
+    } catch {
+      sendJson(response, 400, { ok: false, error: 'invalid body' })
+      return
+    }
+    const kind = body?.kind === 'fallback' ? 'fallback' : 'host'
+    const parts = [`dialog: drew the ${kind} dialog`]
+    if (typeof body?.viewport === 'string' && body.viewport !== '') parts.push(`viewport ${body.viewport}`)
+    // The single most useful fact: what the document says is painted at the
+    // centre, and on top of each answer. When the answer is not on top, that
+    // names the element that is.
+    if (typeof body?.centre === 'string' && body.centre !== '') parts.push(`centre is ${body.centre}`)
+    for (const key of ['confirm', 'restart', 'cancel']) {
+      const hit = body?.[`${key}Hit`]
+      if (typeof hit === 'string' && hit !== '') parts.push(`${key} is ${hit}`)
+    }
+    note?.(parts.join('; '))
+    sendJson(response, 200, { ok: true })
+  }
+}
+
+/**
  * Validate the advanced settings a card may send.
  *
  * STRICT, unlike the shutdown body, which clamps: those fields are read once by a
@@ -1387,4 +1515,257 @@ export function parseDesktopTerminateResult(output) {
     }
   }
   return null
+}
+
+/**
+ * The PowerShell that restarts the desktop app, for a host that cannot be
+ * replayed.
+ *
+ * The web case restarts by re-running the host's own argv in a supervisor. That
+ * is impossible here for a reason that is structural, not a missing feature: the
+ * desktop host's argv is `app.asar\dsh <profile> <runtime> ...`, which is a child
+ * command line, not the command that started the app. Replaying it starts a
+ * SECOND host with no Electron around it, which is why `relaunchPlan` has always
+ * refused -- and refusing was right, because the alternative was worse than
+ * saying no.
+ *
+ * What does work was found by watching the packaged app close: killing the
+ * Electron MAIN process ends the whole app in one step, with no orphans and no
+ * crash dialog (`desktopTerminateScript` carries the measurements). Restarting
+ * is that, plus starting the executable again. Both steps live in this one
+ * script, outside the DSH tree, because the script has to outlive the processes
+ * it kills.
+ *
+ * The order matters and is the whole design:
+ *
+ *   1. kill the main process   -- the window goes away here
+ *   2. kill the host           -- a fork child of the main process; when the
+ *                                 parent dies it survives as an orphan holding
+ *                                 the port, and the new instance would collide
+ *   3. wait                    -- Electron releases its single-instance lock on
+ *                                 exit, and starting too early is silently
+ *                                 treated as "already running" and discarded
+ *   4. start the executable    -- same file, same working directory
+ *
+ * Step 4 is guarded: the executable must still exist, and a failure there leaves
+ * the app closed rather than half-started. That is the one outcome worth being
+ * explicit about to the person who asked -- a restart that cannot start is a
+ * shutdown.
+ *
+ * The waits are polls, not sleeps, and that is not a micro-optimisation. The
+ * first version slept a fixed 1200 ms for the main process to die and another
+ * 2500 ms for the single-instance lock, so every restart took about four and a
+ * half seconds even though the app was usually gone in a few hundred. A dead
+ * process is a fact that can be checked, so it is checked: the loop watches for
+ * the pid to disappear and moves on the moment it does. Only the last stretch is
+ * a real sleep -- there is nothing to poll for a lock that lives inside a process
+ * which is already gone.
+ *
+ * Single quotes only, for the same reason as the terminating script: the text
+ * travels as base64 and a double-quoted PowerShell string would expand `$`.
+ *
+ * Every step is recorded in a log the caller names, and that is not decoration:
+ * the helper is started with no stdio, so without a file there is no way to tell
+ * "the kill was refused" from "the helper died with the process it was about to
+ * replace". A restart that silently does nothing is exactly the failure this log
+ * was added to end.
+ *
+ * The helper is started through WMI, and that is the second half of the design.
+ * Measured on Windows 11 with this host: `detached: true` makes PowerShell exit
+ * 0 without running a single statement, and a plain child is killed the moment
+ * its parent exits -- so a helper started either way cannot survive the two
+ * processes it is supposed to outlive. A process created by
+ * `Win32_Process.Create` is a child of the WMI service instead, outside whatever
+ * job object the app uses, and it does finish. If WMI refuses, the same script
+ * runs in place as a fallback: worse odds, but still an attempt, and the log says
+ * which path was taken.
+ *
+ * `wscript.exe`, not `powershell.exe`, and the window is the reason. A process
+ * created by WMI gets a console of its own, and `-WindowStyle Hidden` only hides a
+ * window that already exists: it still flashes, still takes a moment of taskbar,
+ * and still belongs to whatever the user is looking at. A WScript host is a
+ * GUI-subsystem program with no console to inherit, so there is nothing to show
+ * and nothing to hide, and the helper needs none.
+ *
+ * The launcher here is only the process plumbing: it locates the helper script and
+ * asks WMI to run it under `wscript.exe`. The steps above live in
+ * `desktopRestartVbs`, because they need to run in a process that outlives both
+ * the host and the window it belongs to.
+ * @param options - `{ vbsPath, logPath }`.
+ * @returns the launcher script text, ready for `-EncodedCommand` transport.
+ */
+export function desktopRestartScript(options) {
+  // PowerShell escapes a literal quote by doubling it inside a single-quoted
+  // string. Nothing else in a Windows path needs escaping, and single quotes are
+  // legal in file names, so this is not paranoia.
+  const quote = (value) => `'${String(value ?? '').replace(/'/gu, "''")}'`
+  const vbs = quote(options?.vbsPath)
+  const log = quote(options?.logPath)
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$vbs = ${vbs}`,
+    `$log = ${log}`,
+    // A function, not inlined calls: the log path may be empty, in which case
+    // every write must be a no-op rather than an error that stops the restart.
+    'function Note([string]$text) {',
+    '  if ($log -ne "" -and $log -ne $null) { try { Add-Content -LiteralPath $log -Value ((Get-Date -Format "HH:mm:ss") + " " + $text) } catch { } }',
+    '}',
+    'Note "launcher: starting the helper through WMI"',
+    // wscript, not powershell. A process created by WMI gets a console of its own,
+    // and a console window -- even one hidden a moment later -- is exactly what the
+    // user asked not to see. wscript.exe is a GUI-subsystem program, so there is no
+    // console to show, and the VBScript it runs can wait, kill and start without
+    // ever needing one. `//B` suppresses every message box it could otherwise raise.
+    `$cmd = 'wscript.exe //B //Nologo "{0}"' -f $vbs`,
+    'try {',
+    '  $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd }',
+    '  if ($null -eq $created -or $created.ReturnValue -ne 0) { throw ("ReturnValue=" + $created.ReturnValue) }',
+    '  Note ("launcher: helper " + $created.ProcessId + " is running outside this process tree")',
+    '} catch {',
+    '  Note ("launcher: WMI refused (" + $_.Exception.Message + "), running the helper in place")',
+    '  cscript.exe //B //Nologo $vbs',
+    '}',
+  ].join('\n')
+}
+
+/**
+ * The part that actually kills and restarts, as VBScript.
+ *
+ * VBScript, not PowerShell, and the reason is the one the user kept pointing at:
+ * a window. PowerShell is a console program, so any process that starts it gets a
+ * console window, and `-WindowStyle Hidden` only hides one that already exists --
+ * it still flashes and still costs a taskbar entry for the moment it lives. A
+ * WScript host is a GUI-subsystem program with no console to inherit, and the
+ * script below does everything the PowerShell worker did -- per-pid termination
+ * through WMI, polling for the pid to be gone, and starting the executable again --
+ * without one ever existing.
+ *
+ * The numbers and paths are written into the script rather than passed as
+ * arguments because that keeps every quoting rule in one place: `vbsQuote` below.
+ * @param options - `{ mainPid, hostPid, exePath, logPath }`.
+ * @returns the helper script text.
+ */
+export function desktopRestartVbs(options) {
+  const whole = (value) => {
+    const number = Number(value)
+    return Number.isFinite(number) && number > 0 ? String(Math.trunc(number)) : '0'
+  }
+  // VBScript escapes a literal quote by doubling it. Newlines are stripped rather
+  // than escaped: there is no way to write one into a string literal without
+  // changing the line structure, and a path cannot legitimately contain one.
+  const vbsQuote = (value) => `"${String(value ?? '').replace(/[\r\n]/gu, '').replace(/"/gu, '""')}"`
+  const mainPid = whole(options?.mainPid)
+  const hostPid = whole(options?.hostPid)
+  const exe = vbsQuote(options?.exePath)
+  const log = vbsQuote(options?.logPath)
+  return [
+    'Option Explicit',
+    // Written per restart: the pids and paths below belong to this run only.
+    'Dim MAIN_PID, HOST_PID, EXE_PATH, LOG_PATH',
+    `MAIN_PID = ${mainPid}`,
+    `HOST_PID = ${hostPid}`,
+    `EXE_PATH = ${exe}`,
+    `LOG_PATH = ${log}`,
+    '',
+    'Dim fso, shell, wmi',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'Set shell = CreateObject("WScript.Shell")',
+    'Set wmi = GetObject("winmgmts:\\\\.\\root\\cimv2")',
+    '',
+    "' Every log write is swallowed: a restart must not stop because a log path",
+    "' became unwritable, and the last thing this script needs is an error dialog.",
+    'Sub Note(text)',
+    '  On Error Resume Next',
+    '  Dim file',
+    '  If LOG_PATH <> "" Then',
+    '    Set file = fso.OpenTextFile(LOG_PATH, 8, True)',
+    '    file.WriteLine Stamp() & " " & text',
+    '    file.Close',
+    '  End If',
+    'End Sub',
+    '',
+    'Function Stamp()',
+    '  Stamp = Right("0" & Hour(Time), 2) & ":" & Right("0" & Minute(Time), 2) & ":" & Right("0" & Second(Time), 2)',
+    'End Function',
+    '',
+    'Function Alive(pid)',
+    '  Dim rows',
+    '  If pid <= 4 Then',
+    '    Alive = False',
+    '  Else',
+    '    Set rows = wmi.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE ProcessId = " & pid)',
+    '    Alive = (rows.Count > 0)',
+    '  End If',
+    'End Function',
+    '',
+    'Sub KillPid(pid, label)',
+    '  Dim rows, p, rc',
+    '  If pid <= 4 Then',
+    '    Note label & ": refusing pid " & pid',
+    '    Exit Sub',
+    '  End If',
+    '  Set rows = wmi.ExecQuery("SELECT * FROM Win32_Process WHERE ProcessId = " & pid)',
+    '  If rows.Count = 0 Then',
+    '    Note label & ": pid " & pid & " is already gone"',
+    '    Exit Sub',
+    '  End If',
+    '  For Each p In rows',
+    '    On Error Resume Next',
+    '    rc = p.Terminate()',
+    '    If Err.Number <> 0 Then',
+    '      Note label & ": kill failed: " & Err.Description',
+    '      Err.Clear',
+    '    ElseIf rc <> 0 Then',
+    '      Note label & ": kill returned " & rc',
+    '    End If',
+    '    On Error GoTo 0',
+    '  Next',
+    'End Sub',
+    '',
+    'Sub WaitGone(pid, label)',
+    '  Dim waited',
+    '  waited = 0',
+    '  Do While waited < 3000',
+    '    If Not Alive(pid) Then Exit Do',
+    '    WScript.Sleep 50',
+    '    waited = waited + 50',
+    '  Loop',
+    '  Note label & ": pid " & pid & " gone after " & waited & "ms = " & (Not Alive(pid))',
+    'End Sub',
+    '',
+    'Note "helper: main=" & MAIN_PID & " host=" & HOST_PID & " exe=" & EXE_PATH',
+    // Let the answer reach the page before the window it was painted on begins to
+    // disappear. Cutting this to zero made the reply race the teardown; it is short
+    // because a fetch plus one render is measured in tens of milliseconds.
+    'WScript.Sleep 400',
+    'Note "helper: killing main"',
+    'KillPid MAIN_PID, "helper"',
+    'WaitGone MAIN_PID, "helper"',
+    'Note "helper: killing host"',
+    'KillPid HOST_PID, "helper"',
+    'WaitGone HOST_PID, "helper"',
+    // The one wait that cannot be observed from outside: the single-instance lock
+    // is released by the exit itself, so a short margin is cheaper than a probe
+    // that does not exist.
+    'WScript.Sleep 400',
+    'If fso.FileExists(EXE_PATH) Then',
+    '  Note "helper: starting the executable"',
+    // Window state 1: the app's own window shows. Nothing is inherited from this
+    // script -- it has no console and belongs to no job object, because WMI created
+    // it -- so the window that appears is the app's, and closing any other window
+    // cannot take it down.
+    '  On Error Resume Next',
+    '  shell.Run """" & EXE_PATH & """", 1, False',
+    '  If Err.Number <> 0 Then',
+    '    Note "helper: start failed: " & Err.Description',
+    '    Err.Clear',
+    '  Else',
+    '    Note "helper: started"',
+    '  End If',
+    '  On Error GoTo 0',
+    'Else',
+    '  Note "helper: the executable is not on disk"',
+    'End If',
+    'Note "helper: done"',
+  ].join('\n')
 }

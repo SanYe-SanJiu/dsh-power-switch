@@ -598,6 +598,11 @@ describe('the power control', () => {
       assert.equal(button.props.disabled, false)
       assert.equal(phaseOf(tree), 'idle')
       assert.equal(byClose(tree), undefined, 'no close button before anything happened')
+      // The status line sits on the same row as the button and used to repeat the
+      // button's own label while idle, so the card read "关闭 DSH 进程 关闭
+      // DSH 进程". The label belongs to the button only.
+      assert.equal(textOf(statusNode(tree)), '', 'the status line stays silent until something happens')
+      assert.notEqual(textOf(byAction(tree)), '', 'the button still carries the label')
     } finally { bundle.restore() }
   })
 

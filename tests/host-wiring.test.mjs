@@ -19,7 +19,7 @@ import { after, before, describe, it } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { CONFIG_ROUTE, POWER_ROUTE } from '../src/host.js'
 import { apply, inject, name } from '../src/index.js'
-import { executableName, terminateDesktopApp } from '../src/index.js'
+import { executableName, restartDesktopApp, terminateDesktopApp } from '../src/index.js'
 import { readRecordedLaunchMode, stateDir, writeRecordedLaunchMode } from '../scripts/restart-shared.mjs'
 
 /**
@@ -239,15 +239,16 @@ describe('host plugin wiring', () => {
     assert.equal(readRecordedLaunchMode(), 'app')
   })
 
-  it('registers the shutdown, configuration, app-window, restart, shortcut and settings routes', () => {
+  it('registers the shutdown, configuration, app-window, restart, shortcut, settings and dialog-report routes', () => {
     const { ctx, state } = makeContext()
     apply(ctx, {})
-    assert.equal(state.routes.length, 6)
+    assert.equal(state.routes.length, 7)
     assert.deepEqual(
       state.routes.map((route) => route.path).sort(),
       [
         '/api/dsh-power-switch/app-window',
         '/api/dsh-power-switch/config',
+        '/api/dsh-power-switch/dialog',
         '/api/dsh-power-switch/restart',
         '/api/dsh-power-switch/settings',
         '/api/dsh-power-switch/shortcut',
@@ -263,8 +264,8 @@ describe('host plugin wiring', () => {
   it('registers each route inside its own labelled effect, so unloading retracts it', () => {
     const { ctx, state } = makeContext()
     apply(ctx, {})
-    // Six routes plus the exit-probe lifetime effect.
-    assert.equal(state.effects.length, 7)
+    // Seven routes plus the exit-probe lifetime effect.
+    assert.equal(state.effects.length, 8)
     const labels = state.effects.map((effect) => effect.label).join('\n')
     assert.match(labels, /shutdown route/)
     assert.match(labels, /configuration route/)
@@ -272,6 +273,7 @@ describe('host plugin wiring', () => {
     assert.match(labels, /restart route/)
     assert.match(labels, /shortcut route/)
     assert.match(labels, /settings route/)
+    assert.match(labels, /dialog report route/)
     assert.match(labels, /exit probe lifetime/)
     for (const effect of state.effects) assert.equal(typeof effect.dispose, 'function')
   })
@@ -317,10 +319,10 @@ describe('host plugin wiring', () => {
     const codes = []
     const { ctx, state } = makeContext({ appExit: (code) => { codes.push(code) } })
     apply(ctx, { delayMs: 5 }, { flushMs: 1, watchdogMs: 5 })
-    // All six routes exist; only the host-generated configuration form is lost
+    // All seven routes exist; only the host-generated configuration form is lost
     // without a settings provider (the advanced settings are recorded by the
     // plugin itself, so they stay editable).
-    assert.equal(state.routes.length, 6)
+    assert.equal(state.routes.length, 7)
     await shutdownRoute(state).handler(makeRequest({ headers: TRUSTED, body: '{}' }), makeResponse())
     await new Promise((resolve) => { setTimeout(resolve, 40) })
     assert.deepEqual(codes, [0])
@@ -500,5 +502,28 @@ describe('terminating the desktop app from the host', () => {
     assert.equal(executableName('C:\\Program Files\\nodejs\\node.exe'), 'node')
     assert.equal(executableName(''), '')
     assert.equal(executableName(undefined), '')
+  })
+
+  it('refuses to restart the app when the pid is not the main process', () => {
+    // Same fence as the terminating path: a re-parented host points at PID 4,
+    // and "restart" would then mean "kill the System process".
+    const notes = []
+    assert.equal(restartDesktopApp({
+      note: (line) => notes.push(line), mainPid: 4, hostPid: 4321, exePath: 'C:\\App\\a.exe',
+    }), null)
+    assert.match(notes[0], /is not the main process/)
+  })
+
+  it('refuses to restart the app when the executable is gone', () => {
+    // The one outcome worth refusing rather than discovering: a helper that
+    // kills the app and then cannot start it leaves a closed app behind, four
+    // seconds after the page was told the restart was accepted.
+    const missing = join(tmpdir(), 'dsh-power-switch-no-such-app', 'DeepSeek Harness.exe')
+    assert.equal(existsSync(missing), false)
+    const notes = []
+    assert.equal(restartDesktopApp({
+      note: (line) => notes.push(line), mainPid: 4321, hostPid: 4322, exePath: missing,
+    }), null)
+    assert.match(notes[0], /is not on disk any more/)
   })
 })
