@@ -20,3 +20,8 @@ desktop.ini
 # abandoned. Nothing ships from these, and a stray one must never reach a commit.
 _*.mjs
 _*.cjs
+
+# Commit-message drafts. Written before a `git commit -F`, and never part of the
+# release: the message itself lives in the commit, this is only the scratch copy.
+.gitmessage-*.txt
+
